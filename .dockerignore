@@ -1,7 +1,66 @@
-frontend/node_modules/
-node_modules/
-bin/
-build/bin/
-.git/
-.superpowers/
-*.log
+# Build context for build/altlinux/Dockerfile (`go build -mod=vendor ./cmd/app`).
+# Allowlist: everything is excluded except the sources the build needs, so real
+# documents, keys or IDE/agent files in the working tree never reach image layers.
+*
+!go.mod
+!go.sum
+!vendor/
+!cmd/
+!internal/
+!pkg/
+!frontend/assets.go
+!frontend/dist/
+# Vendored third-party modules (go mod vendor); filtered by the rules below like any other path.
+!vendor/**
+
+# Defense in depth inside the allowed directories (152-FZ): user documents, key
+# containers and secrets at any depth, matched case-insensitively (e.g. *.XLSX).
+**/*.[dD][eE][pP][mM][aA][pP]
+**/*.[xX][lL][sS][xX]
+**/*.[xX][lL][sS][mM]
+**/*.[xX][lL][sS]
+**/*.[xX][lL][tT][xX]
+**/*.[xX][lL][tT][mM]
+**/*.[xX][lL][sS][bB]
+**/*.[oO][dD][sS]
+**/*.[xX][oO][dD][sS]
+**/*.[cC][sS][vV]
+**/*.[tT][sS][vV]
+**/*.[pP][dD][fF]
+**/*.[dD][oO][cC][xX]
+**/*.[dD][oO][cC]
+**/*.[oO][dD][tT]
+**/*.[rR][tT][fF]
+**/*.[tT][xX][tT]
+**/*.[pP][aA][rR][qQ][uU][eE][tT]
+**/*.[dD][bB]
+**/*.[sS][qQ][lL][iI][tT][eE]
+**/*.[sS][qQ][lL][iI][tT][eE]3
+**/*.[zZ][iI][pP]
+**/*.7[zZ]
+**/*.[rR][aA][rR]
+**/*.[gG][zZ]
+**/mock_documents/
+**/testdata/
+
+**/*.[eE][nN][vV]
+**/*.[kK][eE][yY]
+**/*.[pP][eE][mM]
+**/*.[cC][rR][tT]
+**/*.[cC][eE][rR]
+**/*.[pP]12
+**/*.[pP][fF][xX]
+**/*.[sS][eE][cC][rR][eE][tT]
+**/*.[tT][oO][kK][eE][nN]
+**/.env
+**/.env.*
+**/id_rsa*
+**/id_ed25519*
+**/credentials.json
+**/service-account*.json
+**/.DS_Store
+
+# Re-allow only the vendored metadata the build needs (the *.txt rule above hides it):
+# modules.txt for `go build -mod=vendor`, and third-party license texts.
+!vendor/modules.txt
+!vendor/**/LICENSE*.txt

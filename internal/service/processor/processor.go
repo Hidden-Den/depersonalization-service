@@ -293,6 +293,7 @@ func (p *Processor) Process(ctx context.Context, opts domain.ProcessOptions, rep
 		"progress_callback":         progressCallback,
 		"shuffle_rows":              effectiveShuffle,
 		"salt":                      salt,
+		"input_path":                opts.InputPath,
 	}
 
 	if ext == ".docx" || ext == ".odt" || ext == ".pdf" || ext == ".txt" {

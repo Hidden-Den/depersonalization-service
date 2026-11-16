@@ -757,3 +757,135 @@ func TestRestorer_Restore_XLSX_MislabeledAsCSV(t *testing.T) {
 	}
 }
 
+func TestRestorer_Restore_Excel_HeavilyModifiedByExternalPipeline(t *testing.T) {
+	km := keymanager.New()
+	rest := restorer.New(km)
+	tmpDir := t.TempDir()
+
+	modifiedXLSXPath := filepath.Join(tmpDir, "ai_scored_employees.xlsx")
+	keyPath := filepath.Join(tmpDir, "employees.depmap")
+	restoredXLSXPath := filepath.Join(tmpDir, "employees_restored.xlsx")
+
+	// 1. Create .depmap key container with mappings for tokens
+	tokenFIO := "[ФИО_0001]"
+	tokenPhone := "[Телефон_0001]"
+	tokenSNILS := "[СНИЛС_0001]"
+
+	origFIO := "Смирнов Алексей Петрович"
+	origPhone := "+7 (999) 888-77-66"
+	origSNILS := "452-190-883 12"
+
+	mappings := map[string]string{
+		tokenFIO:   origFIO,
+		tokenPhone: origPhone,
+		tokenSNILS: origSNILS,
+	}
+
+	password := "SecretKey2026!"
+	if err := km.CreateContainer(keyPath, password, "original.xlsx", mappings); err != nil {
+		t.Fatalf("failed to create key container: %v", err)
+	}
+
+	// 2. Build modified XLSX file with:
+	// - Renamed headers: "Client_Name_Renamed", "Mobile_Phone_Renamed", "SNILS_Renamed"
+	// - Newly added columns: "AI_Score", "Recommendation_LLM", "Risk_Flag"
+	// - Shifted columns: AI_Score is placed between Phone and Name
+	// - Embedded token in text: "Рекомендация: утвердить сотрудника [ФИО_0001] в проект"
+	f := excelize.NewFile()
+	sheet := "Report"
+	f.SetSheetName("Sheet1", sheet)
+
+	_ = f.SetCellValue(sheet, "A1", "ID")
+	_ = f.SetCellValue(sheet, "B1", "AI_Score")               // New column
+	_ = f.SetCellValue(sheet, "C1", "Mobile_Phone_Renamed")   // Renamed & moved
+	_ = f.SetCellValue(sheet, "D1", "Client_Name_Renamed")    // Renamed & moved
+	_ = f.SetCellValue(sheet, "E1", "Recommendation_LLM")     // New column with token in text
+	_ = f.SetCellValue(sheet, "F1", "SNILS_Renamed")          // Renamed
+	_ = f.SetCellValue(sheet, "G1", "Risk_Flag")              // New column
+
+	_ = f.SetCellValue(sheet, "A2", "EMP-100")
+	_ = f.SetCellValue(sheet, "B2", 0.99)
+	_ = f.SetCellValue(sheet, "C2", tokenPhone)
+	_ = f.SetCellValue(sheet, "D2", tokenFIO)
+	_ = f.SetCellValue(sheet, "E2", "Рекомендация: утвердить сотрудника "+tokenFIO+" в проект")
+	_ = f.SetCellValue(sheet, "F2", tokenSNILS)
+	_ = f.SetCellValue(sheet, "G2", "Green")
+
+	if err := f.SaveAs(modifiedXLSXPath); err != nil {
+		t.Fatalf("failed to save modified xlsx: %v", err)
+	}
+	_ = f.Close()
+
+	// 3. Restore using Restorer service
+	var reporterCalls int
+	reporter := func(proc, total, pct int) {
+		reporterCalls++
+	}
+
+	res, err := rest.Restore(context.Background(), domain.RestoreOptions{
+		InputPath:  modifiedXLSXPath,
+		KeyPath:    keyPath,
+		Password:   password,
+		OutputPath: restoredXLSXPath,
+	}, reporter)
+	if err != nil {
+		t.Fatalf("rest.Restore failed: %v", err)
+	}
+
+	if !res.Success {
+		t.Fatalf("expected res.Success=true")
+	}
+	if res.RestoredCells != 4 {
+		t.Errorf("expected 4 restored cells (Phone, FIO, LLM text, SNILS), got %d", res.RestoredCells)
+	}
+
+	// 4. Verify contents of restored file
+	rf, err := excelize.OpenFile(restoredXLSXPath)
+	if err != nil {
+		t.Fatalf("failed to open restored xlsx: %v", err)
+	}
+	defer rf.Close()
+
+	// Verify headers untouched
+	hB, _ := rf.GetCellValue(sheet, "B1")
+	hC, _ := rf.GetCellValue(sheet, "C1")
+	hD, _ := rf.GetCellValue(sheet, "D1")
+	hE, _ := rf.GetCellValue(sheet, "E1")
+	if hB != "AI_Score" || hC != "Mobile_Phone_Renamed" || hD != "Client_Name_Renamed" || hE != "Recommendation_LLM" {
+		t.Errorf("headers were modified: B1=%q, C1=%q, D1=%q, E1=%q", hB, hC, hD, hE)
+	}
+
+	// Verify restored values
+	scoreVal, _ := rf.GetCellValue(sheet, "B2")
+	if scoreVal != "0.99" {
+		t.Errorf("AI_Score corrupted: got %q", scoreVal)
+	}
+
+	phoneVal, _ := rf.GetCellValue(sheet, "C2")
+	if phoneVal != origPhone {
+		t.Errorf("Phone not restored: got %q, expected %q", phoneVal, origPhone)
+	}
+
+	fioVal, _ := rf.GetCellValue(sheet, "D2")
+	if fioVal != origFIO {
+		t.Errorf("FIO not restored: got %q, expected %q", fioVal, origFIO)
+	}
+
+	recVal, _ := rf.GetCellValue(sheet, "E2")
+	expectedRec := "Рекомендация: утвердить сотрудника " + origFIO + " в проект"
+	if recVal != expectedRec {
+		t.Errorf("LLM recommendation not restored: got %q, expected %q", recVal, expectedRec)
+	}
+
+	snilsVal, _ := rf.GetCellValue(sheet, "F2")
+	if snilsVal != origSNILS {
+		t.Errorf("SNILS not restored: got %q, expected %q", snilsVal, origSNILS)
+	}
+
+	riskVal, _ := rf.GetCellValue(sheet, "G2")
+	if riskVal != "Green" {
+		t.Errorf("Risk_Flag corrupted: got %q", riskVal)
+	}
+}
+
+

@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -71,9 +69,6 @@ func (r *Restorer) Restore(ctx context.Context, opts domain.RestoreOptions, repo
 	}
 
 	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-
 		if r.audit == nil {
 			return
 		}

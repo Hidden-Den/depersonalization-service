@@ -20,6 +20,13 @@ import (
 
 const defaultPreviewSalt = "preview-salt-152fz"
 
+const (
+	// xlsxInspectSampleRows is how many leading rows are read to detect the header block.
+	xlsxInspectSampleRows = 40
+	// xlsxPreviewRowLimit is the number of before/after rows shown on the inspection screen.
+	xlsxPreviewRowLimit = 10
+)
+
 // Inspector provides document analysis and inspection across supported formats.
 type Inspector struct{}
 
@@ -279,16 +286,22 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
 	}
 	var sample [][]string
-	for sampleIter.Next() && len(sample) < 40 {
+	for len(sample) < xlsxInspectSampleRows && sampleIter.Next() {
 		if ctx != nil && ctx.Err() != nil {
 			_ = sampleIter.Close()
 			return nil, ctx.Err()
 		}
 		cols, err := sampleIter.Columns()
 		if err != nil {
-			break
+			_ = sampleIter.Close()
+			return nil, fmt.Errorf("failed to read row %d of sheet %s: %w", len(sample)+1, sheetName, err)
 		}
 		sample = append(sample, cols)
+	}
+	// A short sample must mean the sheet really ended, not that reading failed.
+	if err := sampleIter.Error(); err != nil {
+		_ = sampleIter.Close()
+		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
 	}
 	_ = sampleIter.Close()
 
@@ -303,7 +316,7 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		}, nil
 	}
 
-	merges := formats.ExtractMergeRanges(xl, sheetName)
+	merges := formats.ExtractMergeRanges(xl, sheetName, sample)
 	bounds := formats.DetectHeaderBounds(sample, merges)
 	headers := formats.BuildHierarchicalHeaders(sample, bounds.LeafHeaderIdx, merges)
 	if len(headers) > 0 {
@@ -335,85 +348,122 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 
 	ts := anonymizer.NewTokenSession(defaultPreviewSalt)
 	var previewRows []domain.PreviewRow
-	rowCount := 0
+	sheetInfo := func(rowCount int) *domain.SheetInfo {
+		return &domain.SheetInfo{
+			Name:        sheetName,
+			Index:       sheetIndex,
+			RowCount:    rowCount,
+			Headers:     headers,
+			Entities:    entities,
+			PreviewRows: previewRows,
+		}
+	}
+	addPreviewRow := func(cols []string) {
+		before := make([]string, len(headers))
+		after := make([]string, len(headers))
+		for j := 0; j < len(headers); j++ {
+			val := ""
+			if j < len(cols) {
+				val = cols[j]
+			}
+			before[j] = val
+			ct := formats.ColUnknown
+			if j < len(colTypes) {
+				ct = colTypes[j]
+			}
+			after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
+		}
+		previewRows = append(previewRows, domain.PreviewRow{
+			Index:  len(previewRows) + 1,
+			Before: before,
+			After:  after,
+		})
+	}
 
-	// Preview rows and row count from sample
-	for i := bounds.DataStartIdx; i < len(sample); i++ {
+	// Preview rows from the already-read sample.
+	for i := bounds.DataStartIdx; i < len(sample) && len(previewRows) < xlsxPreviewRowLimit; i++ {
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		rowCount++
-		if len(previewRows) < 10 {
-			cols := sample[i]
-			before := make([]string, len(headers))
-			after := make([]string, len(headers))
-			for j := 0; j < len(headers); j++ {
-				val := ""
-				if j < len(cols) {
-					val = cols[j]
-				}
-				before[j] = val
-				ct := formats.ColUnknown
-				if j < len(colTypes) {
-					ct = colTypes[j]
-				}
-				after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
-			}
-			previewRows = append(previewRows, domain.PreviewRow{
-				Index:  rowCount,
-				Before: before,
-				After:  after,
-			})
+		addPreviewRow(sample[i])
+	}
+
+	sampleDataRows := len(sample) - bounds.DataStartIdx
+	if sampleDataRows < 0 {
+		sampleDataRows = 0
+	}
+	rowCount := sampleDataRows
+
+	// The sample stopped before the limit: the whole sheet is already read.
+	if len(sample) < xlsxInspectSampleRows {
+		return sheetInfo(rowCount), nil
+	}
+
+	// excelize.Rows yields empty rows for gaps, so sample index i is worksheet row i+1 and the
+	// last row of the <dimension> ref maps directly onto it. The dimension is metadata written by
+	// the producing application, so it is trusted only when it is consistent with the rows already
+	// read (a stale or truncated ref falls back to an exact scan).
+	dimLastRow := worksheetDimensionLastRow(xl, sheetName)
+	dimensionTrusted := dimLastRow >= len(sample)
+	if dimensionTrusted {
+		rowCount = dimLastRow - bounds.DataStartIdx
+		if len(previewRows) >= xlsxPreviewRowLimit {
+			return sheetInfo(rowCount), nil
 		}
 	}
 
-	// Count remaining rows in sheet
-	remainingIter, err := xl.Rows(sheetName)
-	if err == nil {
-		skipped := 0
-		for remainingIter.Next() {
-			if ctx != nil && ctx.Err() != nil {
-				_ = remainingIter.Close()
-				return nil, ctx.Err()
-			}
-			skipped++
-			if skipped > len(sample) {
-				rowCount++
-				if len(previewRows) < 10 {
-					cols, _ := remainingIter.Columns()
-					before := make([]string, len(headers))
-					after := make([]string, len(headers))
-					for j := 0; j < len(headers); j++ {
-						val := ""
-						if j < len(cols) {
-							val = cols[j]
-						}
-						before[j] = val
-						ct := formats.ColUnknown
-						if j < len(colTypes) {
-							ct = colTypes[j]
-						}
-						after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
-					}
-					previewRows = append(previewRows, domain.PreviewRow{
-						Index:  rowCount,
-						Before: before,
-						After:  after,
-					})
-				}
-			}
+	// Read past the sample: fill the preview (e.g. after a long preamble) and, when the
+	// dimension cannot be trusted, count the remaining rows exactly.
+	iter, err := xl.Rows(sheetName)
+	if err != nil {
+		return sheetInfo(rowCount), nil
+	}
+	defer iter.Close()
+	extraRows := 0
+	for rowIdx := 0; iter.Next(); rowIdx++ {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		_ = remainingIter.Close()
+		if rowIdx < len(sample) {
+			continue
+		}
+		extraRows++
+		if len(previewRows) < xlsxPreviewRowLimit {
+			cols, colErr := iter.Columns()
+			if colErr != nil {
+				return nil, fmt.Errorf("failed to read row %d of sheet %s: %w", rowIdx+1, sheetName, colErr)
+			}
+			addPreviewRow(cols)
+		} else if dimensionTrusted {
+			break
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
+	}
+	if !dimensionTrusted {
+		rowCount = sampleDataRows + extraRows
 	}
 
-	return &domain.SheetInfo{
-		Name:        sheetName,
-		Index:       sheetIndex,
-		RowCount:    rowCount,
-		Headers:     headers,
-		Entities:    entities,
-		PreviewRows: previewRows,
-	}, nil
+	return sheetInfo(rowCount), nil
+}
+
+// worksheetDimensionLastRow returns the last row of the sheet's <dimension> ref
+// (e.g. 120000 for "A1:K120000"), or 0 when the ref is absent or a single cell.
+func worksheetDimensionLastRow(xl *excelize.File, sheetName string) int {
+	dim, err := xl.GetSheetDimension(sheetName)
+	if err != nil {
+		return 0
+	}
+	parts := strings.Split(dim, ":")
+	if len(parts) != 2 {
+		return 0
+	}
+	_, lastRow, err := excelize.SplitCellName(parts[1])
+	if err != nil {
+		return 0
+	}
+	return lastRow
 }
 
 func inspectXLSX(ctx context.Context, path string) (*domain.FileInfo, error) {

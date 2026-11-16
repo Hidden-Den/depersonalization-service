@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -128,10 +126,6 @@ func RestoreExcel(ctx context.Context, inputPath, outputPath string, dm *depmap.
 	outFile := excelize.NewFile()
 	defer outFile.Close()
 
-	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-	}()
 
 	for sheetIdx, sheetName := range sheetList {
 		select {
@@ -163,6 +157,7 @@ func RestoreExcel(ctx context.Context, inputPath, outputPath string, dm *depmap.
 		}
 
 		rowNum := 0
+		rowCells := make([]interface{}, 0, 64)
 		for rows.Next() {
 			select {
 			case <-ctx.Done():
@@ -186,18 +181,18 @@ func RestoreExcel(ctx context.Context, inputPath, outputPath string, dm *depmap.
 				return restoredCount, fmt.Errorf("failed to get cell coordinate for row %d: %w", rowNum, err)
 			}
 
-			rowCells := make([]interface{}, len(cols))
-			for colIdx, val := range cols {
+			rowCells = rowCells[:0]
+			for _, val := range cols {
 				if len(val) == 0 {
-					rowCells[colIdx] = ""
+					rowCells = append(rowCells, "")
 					continue
 				}
 
 				if restoredVal, ok := RestoreCellString(val, dm); ok {
-					rowCells[colIdx] = restoredVal
+					rowCells = append(rowCells, restoredVal)
 					restoredCount++
 				} else {
-					rowCells[colIdx] = val
+					rowCells = append(rowCells, val)
 				}
 			}
 
@@ -219,9 +214,11 @@ func RestoreExcel(ctx context.Context, inputPath, outputPath string, dm *depmap.
 		}
 
 		// Preserve merged cells from input file
-		if srcMerges, err := xl.GetMergeCells(sheetName); err == nil {
-			for _, m := range srcMerges {
-				_ = sw.MergeCell(m.GetStartAxis(), m.GetEndAxis())
+		mergeRefs := FastExtractMergeRefs(xl, inputPath, sheetName)
+		for _, ref := range mergeRefs {
+			parts := strings.Split(ref, ":")
+			if len(parts) == 2 {
+				_ = sw.MergeCell(parts[0], parts[1])
 			}
 		}
 

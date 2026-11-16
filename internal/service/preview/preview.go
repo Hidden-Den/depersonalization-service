@@ -152,7 +152,7 @@ func getXLSXRowsForSheet(ctx context.Context, path string, targetSheet string, o
 		return nil, nil
 	}
 
-	merges := formats.ExtractMergeRanges(xl, sheetName)
+	merges := formats.ExtractMergeRanges(xl, sheetName, sample)
 	bounds := formats.DetectHeaderBounds(sample, merges)
 	headers := formats.BuildHierarchicalHeaders(sample, bounds.LeafHeaderIdx, merges)
 	if len(headers) > 0 {
