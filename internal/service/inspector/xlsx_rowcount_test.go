@@ -147,3 +147,40 @@ func TestInspectXLSX_NoDimensionCountsRows(t *testing.T) {
 		t.Errorf("expected 120 data rows, got %d", info.RowCount)
 	}
 }
+
+// A row that cannot be read must fail the inspection instead of being reported as the end
+// of the sheet (which would silently truncate the row count).
+func TestInspectXLSX_CorruptRowIsAnError(t *testing.T) {
+	path := writeXLSX(t, 0, 1, 5, "")
+	dst := filepath.Join(t.TempDir(), "corrupt.xlsx")
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+	for _, zf := range zr.File {
+		rc, _ := zf.Open()
+		data, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if zf.Name == "xl/worksheets/sheet1.xml" {
+			patched := regexp.MustCompile(`r="B3"`).ReplaceAll(data, []byte(`r="!!3"`))
+			if string(patched) == string(data) {
+				t.Fatal("cell B3 not found in worksheet XML")
+			}
+			data = patched
+		}
+		w, _ := zw.Create(zf.Name)
+		_, _ = w.Write(data)
+	}
+	_ = zw.Close()
+	_ = out.Close()
+
+	if _, err := inspector.New().Inspect(context.Background(), dst); err == nil {
+		t.Fatal("expected an error for an unreadable row, got nil")
+	}
+}

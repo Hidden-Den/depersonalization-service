@@ -10,6 +10,8 @@
 !pkg/
 !frontend/assets.go
 !frontend/dist/
+# Vendored third-party modules (go mod vendor); filtered by the rules below like any other path.
+!vendor/**
 
 # Defense in depth inside the allowed directories (152-FZ): user documents, key
 # containers and secrets at any depth, matched case-insensitively (e.g. *.XLSX).
@@ -58,6 +60,7 @@
 **/service-account*.json
 **/.DS_Store
 
-# Vendored modules are third-party code fetched by `go mod vendor` and are needed as-is
-# (vendor/modules.txt, licenses, embedded assets).
-!vendor/**
+# Re-allow only the vendored metadata the build needs (the *.txt rule above hides it):
+# modules.txt for `go build -mod=vendor`, and third-party license texts.
+!vendor/modules.txt
+!vendor/**/LICENSE*.txt

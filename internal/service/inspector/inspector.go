@@ -293,9 +293,15 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		}
 		cols, err := sampleIter.Columns()
 		if err != nil {
-			break
+			_ = sampleIter.Close()
+			return nil, fmt.Errorf("failed to read row %d of sheet %s: %w", len(sample)+1, sheetName, err)
 		}
 		sample = append(sample, cols)
+	}
+	// A short sample must mean the sheet really ended, not that reading failed.
+	if err := sampleIter.Error(); err != nil {
+		_ = sampleIter.Close()
+		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
 	}
 	_ = sampleIter.Close()
 
@@ -432,6 +438,9 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		}
 	}
 	if !dimensionTrusted {
+		if err := iter.Error(); err != nil {
+			return nil, fmt.Errorf("failed to count rows in sheet %s: %w", sheetName, err)
+		}
 		rowCount = sampleDataRows + extraRows
 	}
 
