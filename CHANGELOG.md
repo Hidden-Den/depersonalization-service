@@ -7,6 +7,9 @@
 
 ## [Unreleased]
 
+### Удалено
+- **База знаний FAQ и синхронизация с Notion**: удалены утилита `tools/sync_kb/` (`sync_to_notion.py`, `generate_offline_kb.py`, `main.go`), локальная реплика `docs/KNOWLEDGE_BASE.md`, раздел «База знаний и FAQ» в `docs/USER_GUIDE.md` и план `docs/superpowers/plans/2026-10-22-support-triage-kb.md`; из `AGENTS.md` убран пункт о синхронизации базы знаний. Приложение не затронуто. Последняя версия утилиты и базы знаний сохранена в теге `v1.16.1`.
+
 ## [1.16.1] - 2026-11-16
 
 ### Исправлено
