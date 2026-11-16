@@ -1,7 +1,50 @@
+# Build artifacts & dependencies
 frontend/node_modules/
 node_modules/
 bin/
 build/bin/
 .git/
-.superpowers/
 *.log
+
+# IDE / agent metadata
+.idea/
+.vscode/
+.superpowers/
+.worktrees/
+worktrees/
+.claude/
+.DS_Store
+
+# Sensitive user data (152-FZ): never copy real documents or keys into image layers
+*.depmap
+*.xlsx
+*.xlsm
+*.xls
+*.xltx
+*.xltm
+*.xlsb
+*.ods
+*.csv
+*.tsv
+*.pdf
+*.docx
+*.doc
+*.odt
+*.rtf
+*.txt
+# ...but keep vendored module metadata/licenses required by `go build -mod=vendor`
+!vendor/**/*.txt
+!vendor/modules.txt
+mock_documents/
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx

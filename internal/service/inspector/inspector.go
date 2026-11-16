@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -303,7 +305,7 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		}, nil
 	}
 
-	merges := formats.ExtractMergeRanges(xl, sheetName)
+	merges := formats.ExtractMergeRanges(xl, sheetName, sample)
 	bounds := formats.DetectHeaderBounds(sample, merges)
 	headers := formats.BuildHierarchicalHeaders(sample, bounds.LeafHeaderIdx, merges)
 	if len(headers) > 0 {
@@ -335,75 +337,69 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 
 	ts := anonymizer.NewTokenSession(defaultPreviewSalt)
 	var previewRows []domain.PreviewRow
-	rowCount := 0
 
-	// Preview rows and row count from sample
-	for i := bounds.DataStartIdx; i < len(sample); i++ {
+	// Preview rows (up to 10) directly from sample data
+	for i := bounds.DataStartIdx; i < len(sample) && len(previewRows) < 10; i++ {
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		rowCount++
-		if len(previewRows) < 10 {
-			cols := sample[i]
-			before := make([]string, len(headers))
-			after := make([]string, len(headers))
-			for j := 0; j < len(headers); j++ {
-				val := ""
-				if j < len(cols) {
-					val = cols[j]
-				}
-				before[j] = val
-				ct := formats.ColUnknown
-				if j < len(colTypes) {
-					ct = colTypes[j]
-				}
-				after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
+		cols := sample[i]
+		before := make([]string, len(headers))
+		after := make([]string, len(headers))
+		for j := 0; j < len(headers); j++ {
+			val := ""
+			if j < len(cols) {
+				val = cols[j]
 			}
-			previewRows = append(previewRows, domain.PreviewRow{
-				Index:  rowCount,
-				Before: before,
-				After:  after,
-			})
+			before[j] = val
+			ct := formats.ColUnknown
+			if j < len(colTypes) {
+				ct = colTypes[j]
+			}
+			after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
+		}
+		previewRows = append(previewRows, domain.PreviewRow{
+			Index:  len(previewRows) + 1,
+			Before: before,
+			After:  after,
+		})
+	}
+
+	// Fast total row count determination via worksheet dimension
+	rowCount := 0
+	dim, err := xl.GetSheetDimension(sheetName)
+	if err == nil && strings.Contains(dim, ":") {
+		parts := strings.Split(dim, ":")
+		if len(parts) >= 2 {
+			_, r, err := excelize.SplitCellName(parts[len(parts)-1])
+			if err == nil && r > bounds.DataStartIdx {
+				rowCount = r - bounds.DataStartIdx
+			}
 		}
 	}
 
-	// Count remaining rows in sheet
-	remainingIter, err := xl.Rows(sheetName)
-	if err == nil {
-		skipped := 0
-		for remainingIter.Next() {
-			if ctx != nil && ctx.Err() != nil {
-				_ = remainingIter.Close()
-				return nil, ctx.Err()
-			}
-			skipped++
-			if skipped > len(sample) {
-				rowCount++
-				if len(previewRows) < 10 {
-					cols, _ := remainingIter.Columns()
-					before := make([]string, len(headers))
-					after := make([]string, len(headers))
-					for j := 0; j < len(headers); j++ {
-						val := ""
-						if j < len(cols) {
-							val = cols[j]
-						}
-						before[j] = val
-						ct := formats.ColUnknown
-						if j < len(colTypes) {
-							ct = colTypes[j]
-						}
-						after[j] = formats.ProcessCellWithStrategy(anon, ts, ct, val, domain.StrategySemanticTokens, 30)
+	// Fallback row count only if dimension attribute is absent, "A1", or invalid
+	if rowCount == 0 {
+		for i := bounds.DataStartIdx; i < len(sample); i++ {
+			rowCount++
+		}
+		if len(sample) >= 40 {
+			remainingIter, err := xl.Rows(sheetName)
+			if err == nil {
+				skipped := 0
+				for remainingIter.Next() {
+					if ctx != nil && ctx.Err() != nil {
+						_ = remainingIter.Close()
+						return nil, ctx.Err()
 					}
-					previewRows = append(previewRows, domain.PreviewRow{
-						Index:  rowCount,
-						Before: before,
-						After:  after,
-					})
+					skipped++
+					if skipped > len(sample) {
+						rowCount++
+					}
 				}
+				_ = remainingIter.Close()
 			}
 		}
-		_ = remainingIter.Close()
 	}
 
 	return &domain.SheetInfo{
@@ -420,6 +416,11 @@ func inspectXLSX(ctx context.Context, path string) (*domain.FileInfo, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+
+	defer func() {
+		goruntime.GC()
+		debug.FreeOSMemory()
+	}()
 
 	stat, err := os.Stat(path)
 	if err != nil {

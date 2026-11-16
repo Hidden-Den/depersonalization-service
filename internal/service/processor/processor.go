@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -107,6 +109,9 @@ func (p *Processor) Process(ctx context.Context, opts domain.ProcessOptions, rep
 	}
 
 	defer func() {
+		goruntime.GC()
+		debug.FreeOSMemory()
+
 		if p.audit == nil {
 			return
 		}
@@ -293,6 +298,7 @@ func (p *Processor) Process(ctx context.Context, opts domain.ProcessOptions, rep
 		"progress_callback":         progressCallback,
 		"shuffle_rows":              effectiveShuffle,
 		"salt":                      salt,
+		"input_path":                opts.InputPath,
 	}
 
 	if ext == ".docx" || ext == ".odt" || ext == ".pdf" || ext == ".txt" {

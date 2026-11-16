@@ -1,7 +1,12 @@
 package formats
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/xml"
 	"fmt"
+	"io"
+	"path"
 	"strconv"
 	"strings"
 	"unicode"
@@ -185,23 +190,296 @@ func DetectHeaderBounds(rows [][]string, merges []ExcelMergeRange) HeaderBounds 
 	}
 }
 
+type openXMLWorkbook struct {
+	Sheets []struct {
+		Name string `xml:"name,attr"`
+		RID  string `xml:"id,attr"`
+	} `xml:"sheets>sheet"`
+}
+
+type openXMLRels struct {
+	Relationships []struct {
+		ID     string `xml:"Id,attr"`
+		Target string `xml:"Target,attr"`
+	} `xml:"Relationship"`
+}
+
+func resolveSheetXMLPath(zr *zip.ReadCloser, sheetName string) string {
+	var wbFile, relsFile *zip.File
+	for _, f := range zr.File {
+		clean := strings.ToLower(strings.ReplaceAll(f.Name, "\\", "/"))
+		if clean == "xl/workbook.xml" {
+			wbFile = f
+		} else if clean == "xl/_rels/workbook.xml.rels" {
+			relsFile = f
+		}
+	}
+	if wbFile == nil {
+		return ""
+	}
+
+	wbRC, err := wbFile.Open()
+	if err != nil {
+		return ""
+	}
+	defer wbRC.Close()
+
+	var wb openXMLWorkbook
+	if err := xml.NewDecoder(wbRC).Decode(&wb); err != nil {
+		return ""
+	}
+
+	targetRID := ""
+	for _, s := range wb.Sheets {
+		if strings.EqualFold(s.Name, sheetName) {
+			targetRID = s.RID
+			break
+		}
+	}
+	if targetRID == "" {
+		return ""
+	}
+
+	if relsFile == nil {
+		return ""
+	}
+	relsRC, err := relsFile.Open()
+	if err != nil {
+		return ""
+	}
+	defer relsRC.Close()
+
+	var rels openXMLRels
+	if err := xml.NewDecoder(relsRC).Decode(&rels); err != nil {
+		return ""
+	}
+
+	for _, r := range rels.Relationships {
+		if r.ID == targetRID {
+			target := strings.ReplaceAll(r.Target, "\\", "/")
+			if strings.HasPrefix(target, "/") {
+				// Absolute part name relative to the package root, e.g. "/xl/worksheets/sheet1.xml".
+				return strings.TrimPrefix(path.Clean(target), "/")
+			}
+			// Relative to the workbook part directory "xl/".
+			return path.Join("xl", target)
+		}
+	}
+	return ""
+}
+
+func streamExtractMergeRefsFromZip(zipPath, sheetName string) ([]string, error) {
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+
+	sheetTarget := resolveSheetXMLPath(zr, sheetName)
+	if sheetTarget == "" {
+		return nil, fmt.Errorf("sheet %s not found in workbook", sheetName)
+	}
+
+	var sheetFile *zip.File
+	for _, f := range zr.File {
+		cleanName := strings.ReplaceAll(f.Name, "\\", "/")
+		if strings.EqualFold(cleanName, sheetTarget) || strings.HasSuffix(strings.ToLower(cleanName), "/"+strings.ToLower(sheetTarget)) {
+			sheetFile = f
+			break
+		}
+	}
+	if sheetFile == nil {
+		return nil, fmt.Errorf("sheet XML file %s not found in zip", sheetTarget)
+	}
+
+	rc, err := sheetFile.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
+	// The bulky <sheetData> section is skipped with a fast byte scan for the start of the
+	// <mergeCells> container (optionally namespace-prefixed, e.g. <x:mergeCells>). Only the
+	// container itself is handed to a real XML decoder, so references are never lost on
+	// read-chunk boundaries and attribute quoting/order does not matter.
+	const keepTail = 256 // enough to hold "<" + namespace prefix + "mergeCells" across reads
+	buf := make([]byte, 64*1024)
+	var pending []byte
+
+	for {
+		n, readErr := rc.Read(buf)
+		if n > 0 {
+			pending = append(pending, buf[:n]...)
+			if pos := findXMLStartTag(pending, mergeCellsTag); pos >= 0 {
+				dec := xml.NewDecoder(io.MultiReader(bytes.NewReader(pending[pos:]), rc))
+				return decodeMergeCells(dec)
+			}
+			if len(pending) > keepTail {
+				pending = append(pending[:0], pending[len(pending)-keepTail:]...)
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				// No <mergeCells> element: the sheet has no merged cells.
+				return nil, nil
+			}
+			return nil, readErr
+		}
+	}
+}
+
+var mergeCellsTag = []byte("mergeCells")
+
+// findXMLStartTag returns the offset of the '<' that opens a start tag with the given local
+// name (with or without a namespace prefix), or -1 if no complete tag name is present in data.
+func findXMLStartTag(data, local []byte) int {
+	off := 0
+	for {
+		i := bytes.Index(data[off:], local)
+		if i < 0 {
+			return -1
+		}
+		i += off
+		end := i + len(local)
+		if end >= len(data) {
+			// The byte after the name is not read yet; the caller keeps the tail and retries.
+			return -1
+		}
+		if isXMLNameTerminator(data[end]) {
+			if tagStart := xmlTagStartBefore(data, i); tagStart >= 0 {
+				return tagStart
+			}
+		}
+		off = i + 1
+	}
+}
+
+// xmlTagStartBefore checks that the name at data[nameIdx:] directly follows "<" or "<prefix:"
+// and returns the offset of '<', or -1 otherwise (e.g. the word occurs inside cell text).
+func xmlTagStartBefore(data []byte, nameIdx int) int {
+	j := nameIdx - 1
+	if j >= 0 && data[j] == ':' {
+		j--
+		prefixEnd := j
+		for j >= 0 && isXMLNameByte(data[j]) {
+			j--
+		}
+		if j == prefixEnd {
+			return -1 // empty prefix
+		}
+	}
+	if j >= 0 && data[j] == '<' {
+		return j
+	}
+	return -1
+}
+
+func isXMLNameByte(b byte) bool {
+	return b == '_' || b == '-' || b == '.' || b >= 0x80 ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+func isXMLNameTerminator(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n' || b == '>' || b == '/'
+}
+
+// decodeMergeCells reads <mergeCell ref="..."/> elements until the closing </mergeCells>.
+func decodeMergeCells(dec *xml.Decoder) ([]string, error) {
+	var refs []string
+	for {
+		// RawToken: no namespace resolution is needed (only local names are compared),
+		// and the section may use prefixes declared on the root element we skipped.
+		tok, err := dec.RawToken()
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse mergeCells: %w", err)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local != "mergeCell" {
+				continue
+			}
+			for _, a := range t.Attr {
+				if a.Name.Local == "ref" && a.Value != "" {
+					refs = append(refs, a.Value)
+					break
+				}
+			}
+		case xml.EndElement:
+			if t.Name.Local == "mergeCells" {
+				return refs, nil
+			}
+		}
+	}
+}
+
+// FastExtractMergeRefs extracts merge cell reference strings (e.g. "A1:B2") without loading the entire worksheet DOM into memory.
+// It opens the zip archive on disk and streams the XML for the specified sheet.
+// If zipPath is empty or the streaming fails, it falls back to xl.GetMergeCells.
+func FastExtractMergeRefs(xl *excelize.File, zipPath, sheetName string) []string {
+	if zipPath == "" && xl != nil {
+		zipPath = xl.Path
+	}
+	if zipPath != "" {
+		if refs, err := streamExtractMergeRefsFromZip(zipPath, sheetName); err == nil {
+			return refs
+		}
+	}
+	if xl != nil {
+		if rawMerges, err := xl.GetMergeCells(sheetName, true); err == nil {
+			refs := make([]string, 0, len(rawMerges))
+			for _, m := range rawMerges {
+				start := m.GetStartAxis()
+				end := m.GetEndAxis()
+				if start != "" && end != "" {
+					refs = append(refs, start+":"+end)
+				}
+			}
+			return refs
+		}
+	}
+	return nil
+}
+
 // ExtractMergeRanges extracts merge cell coordinates and their top-left values from an Excel worksheet.
-func ExtractMergeRanges(xl *excelize.File, sheetName string) []ExcelMergeRange {
+// If sampleRows is provided, cell values for header merges are resolved directly from the sample
+// without triggering full DOM loading or cell queries on the entire workbook.
+func ExtractMergeRanges(xl *excelize.File, sheetName string, sampleRows ...[][]string) []ExcelMergeRange {
 	if xl == nil {
 		return nil
 	}
-	rawMerges, err := xl.GetMergeCells(sheetName)
-	if err != nil || len(rawMerges) == 0 {
+	var sample [][]string
+	if len(sampleRows) > 0 {
+		sample = sampleRows[0]
+	}
+
+	filePath := xl.Path
+	rawRefs := FastExtractMergeRefs(xl, filePath, sheetName)
+	if len(rawRefs) == 0 {
 		return nil
 	}
-	ranges := make([]ExcelMergeRange, 0, len(rawMerges))
-	for _, m := range rawMerges {
-		sCol, sRow, err1 := excelize.CellNameToCoordinates(m.GetStartAxis())
-		eCol, eRow, err2 := excelize.CellNameToCoordinates(m.GetEndAxis())
+
+	ranges := make([]ExcelMergeRange, 0, len(rawRefs))
+	for _, ref := range rawRefs {
+		parts := strings.Split(ref, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		sCol, sRow, err1 := excelize.CellNameToCoordinates(parts[0])
+		eCol, eRow, err2 := excelize.CellNameToCoordinates(parts[1])
 		if err1 != nil || err2 != nil {
 			continue
 		}
-		val, _ := xl.GetCellValue(sheetName, m.GetStartAxis())
+
+		val := ""
+		sRow0 := sRow - 1
+		sCol0 := sCol - 1
+		if sRow0 >= 0 && sRow0 < len(sample) && sCol0 >= 0 && sCol0 < len(sample[sRow0]) {
+			val = sample[sRow0][sCol0]
+		} else if sRow <= 40 && len(sample) == 0 {
+			// Only query cell value if sample wasn't provided and row is in header range
+			val, _ = xl.GetCellValue(sheetName, parts[0])
+		}
+
 		ranges = append(ranges, ExcelMergeRange{
 			StartCol: sCol,
 			StartRow: sRow,

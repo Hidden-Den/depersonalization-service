@@ -889,6 +889,462 @@ func TestRestoreExcel_MultiTierHeader_TokenRestoration(t *testing.T) {
 	}
 }
 
+func TestRestoreExcel_ExhaustiveExternalModifications(t *testing.T) {
+	tmpDir := t.TempDir()
+	origPath := filepath.Join(tmpDir, "employees_orig.xlsx")
+	anonPath := filepath.Join(tmpDir, "employees_anon.xlsx")
+	modifiedPath := filepath.Join(tmpDir, "employees_ai_processed.xlsx")
+	restoredPath := filepath.Join(tmpDir, "employees_restored.xlsx")
+
+	// 1. Create original Excel file with multiple PII columns
+	origFile := excelize.NewFile()
+	sheet := "Сотрудники"
+	origFile.SetSheetName("Sheet1", sheet)
+
+	headers := []string{"Табельный", "ФИО", "СНИЛС", "Телефон", "Паспорт", "Отдел", "Оклад"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		_ = origFile.SetCellValue(sheet, cell, h)
+	}
+
+	origRows := [][]interface{}{
+		{"00101", "Иванов Иван Иванович", "112-233-445 95", "+7 (999) 111-22-33", "4508 123456", "Разработка", 150000},
+		{"00102", "Петрова Анна Сергеевна", "223-344-556 01", "+7 (999) 222-33-44", "4510 654321", "Аналитика", 140000},
+		{"00103", "Сидоров Алексей Петрович", "334-455-667 12", "+7 (999) 333-44-55", "4512 987654", "Безопасность", 160000},
+	}
+
+	for rIdx, rData := range origRows {
+		for cIdx, val := range rData {
+			cell, _ := excelize.CoordinatesToCellName(cIdx+1, rIdx+2)
+			_ = origFile.SetCellValue(sheet, cell, val)
+		}
+	}
+
+	if err := origFile.SaveAs(origPath); err != nil {
+		t.Fatalf("failed to save original xlsx: %v", err)
+	}
+	origFile.Close()
+
+	// 2. Anonymize with StrategySemanticTokens and save key
+	anon := anonymizer.New("salt-comprehensive-test")
+	handler := formats.NewExcelHandler(anon)
+	dm := depmap.New(origPath)
+
+	origBytes, err := os.ReadFile(origPath)
+	if err != nil {
+		t.Fatalf("failed to read original xlsx: %v", err)
+	}
+
+	var anonBuf bytes.Buffer
+	err = handler.Process(context.Background(), bytes.NewReader(origBytes), &anonBuf, map[string]interface{}{
+		"strategy": domain.StrategySemanticTokens,
+		"depmap":   dm,
+	})
+	if err != nil {
+		t.Fatalf("ExcelHandler.Process failed: %v", err)
+	}
+
+	if err := os.WriteFile(anonPath, anonBuf.Bytes(), 0644); err != nil {
+		t.Fatalf("failed to write anonymized xlsx: %v", err)
+	}
+
+	// Read anonymized tokens from anonPath
+	anonXl, err := excelize.OpenFile(anonPath)
+	if err != nil {
+		t.Fatalf("failed to open anonymized file: %v", err)
+	}
+	defer anonXl.Close()
+
+	anonFIO1, _ := anonXl.GetCellValue(sheet, "B2")
+	anonSNILS1, _ := anonXl.GetCellValue(sheet, "C2")
+	anonPhone1, _ := anonXl.GetCellValue(sheet, "D2")
+	anonPass1, _ := anonXl.GetCellValue(sheet, "E2")
+
+	anonFIO2, _ := anonXl.GetCellValue(sheet, "B3")
+	anonSNILS2, _ := anonXl.GetCellValue(sheet, "C3")
+	anonPhone2, _ := anonXl.GetCellValue(sheet, "D3")
+	anonPass2, _ := anonXl.GetCellValue(sheet, "E3")
+
+	anonFIO3, _ := anonXl.GetCellValue(sheet, "B4")
+	anonSNILS3, _ := anonXl.GetCellValue(sheet, "C4")
+	anonPhone3, _ := anonXl.GetCellValue(sheet, "D4")
+	anonPass3, _ := anonXl.GetCellValue(sheet, "E4")
+
+	// 3. Simulate deep AI / user modifications:
+	// - Renamed headers:
+	//     "Табельный" -> "Emp_ID"
+	//     "ФИО" -> "Full_Name_Renamed"
+	//     "Телефон" -> "Mobile_Contact"
+	//     "Паспорт" -> "Doc_Series_Number"
+	// - Shifted / Reordered columns:
+	//     Put "Mobile_Contact" BEFORE "Full_Name_Renamed"
+	// - Inserted NEW columns:
+	//     Col A: "Batch_ID" (inserted before Emp_ID)
+	//     Col E: "ML_Performance_Score" (inserted between columns)
+	//     Col F: "AI_Recommendation" (contains LLM sentence with token!)
+	//     Col J: "Risk_Tier"
+	//     Col K: "Audit_Flag"
+	// - Shuffled / Reordered rows:
+	//     Row 2 in modified = Employee 3 (Sidorov)
+	//     Row 3 in modified = Employee 1 (Ivanov)
+	//     Row 4 in modified = Employee 2 (Petrova)
+	// - Appended a BRAND NEW row (Row 5) with a new hire not in original mapping
+	// - Appended a summary row (Row 6)
+	aiFile := excelize.NewFile()
+	aiFile.SetSheetName("Sheet1", sheet)
+
+	modifiedHeaders := []string{
+		"Batch_ID",               // 1: new col
+		"Emp_ID",                 // 2: renamed
+		"Mobile_Contact",         // 3: moved + renamed
+		"Full_Name_Renamed",      // 4: moved + renamed
+		"ML_Performance_Score",   // 5: new col
+		"AI_Recommendation",      // 6: new col with embedded token in text!
+		"СНИЛС",                  // 7: original header preserved
+		"Doc_Series_Number",      // 8: renamed
+		"Отдел",                  // 9: original header
+		"Оклад",                  // 10: original header
+		"Risk_Tier",              // 11: new col
+		"Audit_Flag",             // 12: new col
+	}
+
+	for i, h := range modifiedHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		_ = aiFile.SetCellValue(sheet, cell, h)
+	}
+
+	// Modified Row 2: Employee 3 (Sidorov)
+	aiRow2 := []interface{}{
+		"BATCH-2026-A",
+		"00103",
+		anonPhone3,
+		anonFIO3,
+		0.98,
+		"Кандидат " + anonFIO3 + " рекомендован к повышению на ведущего эксперта",
+		anonSNILS3,
+		anonPass3,
+		"Безопасность",
+		160000,
+		"Low",
+		true,
+	}
+	for i, v := range aiRow2 {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 2)
+		_ = aiFile.SetCellValue(sheet, cell, v)
+	}
+
+	// Modified Row 3: Employee 1 (Ivanov)
+	aiRow3 := []interface{}{
+		"BATCH-2026-A",
+		"00101",
+		anonPhone1,
+		anonFIO1,
+		0.89,
+		"Сотрудник " + anonFIO1 + " успешно прошел ежегодную аттестацию",
+		anonSNILS1,
+		anonPass1,
+		"Разработка",
+		150000,
+		"Medium",
+		false,
+	}
+	for i, v := range aiRow3 {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 3)
+		_ = aiFile.SetCellValue(sheet, cell, v)
+	}
+
+	// Modified Row 4: Employee 2 (Petrova)
+	aiRow4 := []interface{}{
+		"BATCH-2026-A",
+		"00102",
+		anonPhone2,
+		anonFIO2,
+		0.94,
+		"Назначить премию для " + anonFIO2 + " по итогам квартала",
+		anonSNILS2,
+		anonPass2,
+		"Аналитика",
+		140000,
+		"Low",
+		true,
+	}
+	for i, v := range aiRow4 {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 4)
+		_ = aiFile.SetCellValue(sheet, cell, v)
+	}
+
+	// Modified Row 5: Brand new candidate (not in depmap)
+	aiRow5 := []interface{}{
+		"BATCH-2026-B",
+		"00999",
+		"+7 (999) 000-00-00",
+		"Кузнецов Станислав",
+		0.75,
+		"Новый кандидат на стажировку",
+		"000-000-000 00",
+		"4599 000000",
+		"Стажеры",
+		50000,
+		"High",
+		false,
+	}
+	for i, v := range aiRow5 {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 5)
+		_ = aiFile.SetCellValue(sheet, cell, v)
+	}
+
+	// Modified Row 6: Summary Row
+	aiRow6 := []interface{}{
+		"ИТОГО", "", "", "", 0.89, "Всего обработано записей: 4", "", "", "", 500000, "", "",
+	}
+	for i, v := range aiRow6 {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 6)
+		_ = aiFile.SetCellValue(sheet, cell, v)
+	}
+
+	if err := aiFile.SaveAs(modifiedPath); err != nil {
+		t.Fatalf("failed to save modified xlsx: %v", err)
+	}
+	aiFile.Close()
+
+	// 4. Run RestoreExcel on the heavily modified file
+	ctx := context.Background()
+	restoredCount, err := formats.RestoreExcel(ctx, modifiedPath, restoredPath, dm, nil)
+	if err != nil {
+		t.Fatalf("RestoreExcel failed: %v", err)
+	}
+
+	// Expect 15 restorations:
+	// Row 2: Phone, FIO, AI_Recommendation (substring), SNILS, Passport = 5
+	// Row 3: Phone, FIO, AI_Recommendation (substring), SNILS, Passport = 5
+	// Row 4: Phone, FIO, AI_Recommendation (substring), SNILS, Passport = 5
+	if restoredCount != 15 {
+		t.Errorf("expected exactly 15 restored occurrences, got %d", restoredCount)
+	}
+
+	// 5. Inspect and rigorously verify restored file
+	rf, err := excelize.OpenFile(restoredPath)
+	if err != nil {
+		t.Fatalf("failed to open restored file: %v", err)
+	}
+	defer rf.Close()
+
+	// Check headers untouched
+	for i, expectedHeader := range modifiedHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		actualVal, _ := rf.GetCellValue(sheet, cell)
+		if actualVal != expectedHeader {
+			t.Errorf("header col %d mismatch: expected %q, got %q", i+1, expectedHeader, actualVal)
+		}
+	}
+
+	// Row 2 Checks (Sidorov)
+	valBatch2, _ := rf.GetCellValue(sheet, "A2")
+	if valBatch2 != "BATCH-2026-A" {
+		t.Errorf("row 2 Batch_ID corrupted: got %q", valBatch2)
+	}
+	valEmp2, _ := rf.GetCellValue(sheet, "B2")
+	if valEmp2 != "00103" {
+		t.Errorf("row 2 Emp_ID corrupted: got %q", valEmp2)
+	}
+	valPhone2, _ := rf.GetCellValue(sheet, "C2")
+	if valPhone2 != "+7 (999) 333-44-55" {
+		t.Errorf("row 2 Phone restored mismatch: expected '+7 (999) 333-44-55', got %q", valPhone2)
+	}
+	valFIO2, _ := rf.GetCellValue(sheet, "D2")
+	if valFIO2 != "Сидоров Алексей Петрович" {
+		t.Errorf("row 2 FIO restored mismatch: expected 'Сидоров Алексей Петрович', got %q", valFIO2)
+	}
+	valScore2, _ := rf.GetCellValue(sheet, "E2")
+	if valScore2 != "0.98" {
+		t.Errorf("row 2 ML_Performance_Score corrupted: got %q", valScore2)
+	}
+	valRec2, _ := rf.GetCellValue(sheet, "F2")
+	expectedRec2 := "Кандидат Сидоров Алексей Петрович рекомендован к повышению на ведущего эксперта"
+	if valRec2 != expectedRec2 {
+		t.Errorf("row 2 AI_Recommendation substring mismatch: expected %q, got %q", expectedRec2, valRec2)
+	}
+	valSNILS2, _ := rf.GetCellValue(sheet, "G2")
+	if valSNILS2 != "334-455-667 12" {
+		t.Errorf("row 2 SNILS restored mismatch: expected '334-455-667 12', got %q", valSNILS2)
+	}
+	valPass2, _ := rf.GetCellValue(sheet, "H2")
+	if valPass2 != "4512 987654" {
+		t.Errorf("row 2 Passport restored mismatch: expected '4512 987654', got %q", valPass2)
+	}
+	valTier2, _ := rf.GetCellValue(sheet, "K2")
+	if valTier2 != "Low" {
+		t.Errorf("row 2 Risk_Tier corrupted: got %q", valTier2)
+	}
+
+	// Row 3 Checks (Ivanov)
+	valPhone3, _ := rf.GetCellValue(sheet, "C3")
+	if valPhone3 != "+7 (999) 111-22-33" {
+		t.Errorf("row 3 Phone restored mismatch: expected '+7 (999) 111-22-33', got %q", valPhone3)
+	}
+	valFIO3, _ := rf.GetCellValue(sheet, "D3")
+	if valFIO3 != "Иванов Иван Иванович" {
+		t.Errorf("row 3 FIO restored mismatch: expected 'Иванов Иван Иванович', got %q", valFIO3)
+	}
+	valRec3, _ := rf.GetCellValue(sheet, "F3")
+	expectedRec3 := "Сотрудник Иванов Иван Иванович успешно прошел ежегодную аттестацию"
+	if valRec3 != expectedRec3 {
+		t.Errorf("row 3 AI_Recommendation substring mismatch: expected %q, got %q", expectedRec3, valRec3)
+	}
+	valSNILS3, _ := rf.GetCellValue(sheet, "G3")
+	if valSNILS3 != "112-233-445 95" {
+		t.Errorf("row 3 SNILS restored mismatch: expected '112-233-445 95', got %q", valSNILS3)
+	}
+
+	// Row 4 Checks (Petrova)
+	valPhone4, _ := rf.GetCellValue(sheet, "C4")
+	if valPhone4 != "+7 (999) 222-33-44" {
+		t.Errorf("row 4 Phone restored mismatch: expected '+7 (999) 222-33-44', got %q", valPhone4)
+	}
+	valFIO4, _ := rf.GetCellValue(sheet, "D4")
+	if valFIO4 != "Петрова Анна Сергеевна" {
+		t.Errorf("row 4 FIO restored mismatch: expected 'Петрова Анна Сергеевна', got %q", valFIO4)
+	}
+	valRec4, _ := rf.GetCellValue(sheet, "F4")
+	expectedRec4 := "Назначить премию для Петрова Анна Сергеевна по итогам квартала"
+	if valRec4 != expectedRec4 {
+		t.Errorf("row 4 AI_Recommendation substring mismatch: expected %q, got %q", expectedRec4, valRec4)
+	}
+
+	// Row 5 Checks: Unmapped new candidate preserved as is
+	valFIO5, _ := rf.GetCellValue(sheet, "D5")
+	if valFIO5 != "Кузнецов Станислав" {
+		t.Errorf("row 5 unmapped candidate corrupted: got %q", valFIO5)
+	}
+
+	// Row 6 Checks: Summary row preserved
+	valSumA, _ := rf.GetCellValue(sheet, "A6")
+	if valSumA != "ИТОГО" {
+		t.Errorf("row 6 summary label corrupted: got %q", valSumA)
+	}
+	valSumF, _ := rf.GetCellValue(sheet, "F6")
+	if valSumF != "Всего обработано записей: 4" {
+		t.Errorf("row 6 summary text corrupted: got %q", valSumF)
+	}
+}
+
+func TestRestoreCSV_ExhaustiveExternalModifications(t *testing.T) {
+	origCSV := "Табельный,ФИО,СНИЛС,Телефон\n" +
+		"001,Иванов Иван Иванович,112-233-445 95,+7 999 111-22-33\n" +
+		"002,Петрова Анна Сергеевна,223-344-556 01,+7 999 222-33-44\n"
+
+	anon := anonymizer.New("salt-csv-comprehensive")
+	handler := formats.NewCSVHandler(anon)
+	dm := depmap.New("staff.csv")
+
+	var anonBuf bytes.Buffer
+	err := handler.Process(context.Background(), strings.NewReader(origCSV), &anonBuf, map[string]interface{}{
+		"strategy": domain.StrategySemanticTokens,
+		"depmap":   dm,
+	})
+	if err != nil {
+		t.Fatalf("CSVHandler.Process failed: %v", err)
+	}
+
+	reader := csv.NewReader(&anonBuf)
+	anonRows, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("failed to read anon csv: %v", err)
+	}
+
+	fio1 := anonRows[1][1]
+	snils1 := anonRows[1][2]
+	phone1 := anonRows[1][3]
+
+	fio2 := anonRows[2][1]
+	snils2 := anonRows[2][2]
+	phone2 := anonRows[2][3]
+
+	// Simulate AI Pipeline modifying CSV:
+	// - Column 1: "AI_Run_ID" (new column)
+	// - Column 2: "Staff_Code" (renamed)
+	// - Column 3: "Contact_Phone" (moved before FIO, renamed)
+	// - Column 4: "Employee_Name" (renamed)
+	// - Column 5: "AI_Verdict" (new column with embedded token)
+	// - Column 6: "Insurance_Number" (renamed SNILS)
+	// - Column 7: "Score" (new column)
+	// - Rows shuffled: Row 2 (Petrova) comes first, Row 1 (Ivanov) comes second
+	// - Row 3 added: brand new external record
+	modifiedCSV := "AI_Run_ID,Staff_Code,Contact_Phone,Employee_Name,AI_Verdict,Insurance_Number,Score\n" +
+		"RUN-01,002," + phone2 + "," + fio2 + ",\"Кандидат " + fio2 + " рекомендован к найму\"," + snils2 + ",0.98\n" +
+		"RUN-01,001," + phone1 + "," + fio1 + ",\"Сотрудник " + fio1 + " прошел проверку\"," + snils1 + ",0.91\n" +
+		"RUN-01,999,+7 000 000-00-00,Новиков Игорь,Внешний кандидат не в базе,000-000-000 00,0.50\n"
+
+	var restoredBuf bytes.Buffer
+	ctx := context.Background()
+	restoredCount, err := formats.RestoreCSV(ctx, strings.NewReader(modifiedCSV), &restoredBuf, dm)
+	if err != nil {
+		t.Fatalf("RestoreCSV failed: %v", err)
+	}
+
+	// 2 rows * 4 items (phone, fio, verdict-token, snils) = 8
+	if restoredCount != 8 {
+		t.Errorf("expected 8 restored occurrences, got %d", restoredCount)
+	}
+
+	resReader := csv.NewReader(&restoredBuf)
+	rows, err := resReader.ReadAll()
+	if err != nil {
+		t.Fatalf("failed to parse restored csv: %v", err)
+	}
+
+	// Header verification
+	expectedHeaders := []string{"AI_Run_ID", "Staff_Code", "Contact_Phone", "Employee_Name", "AI_Verdict", "Insurance_Number", "Score"}
+	for i, h := range expectedHeaders {
+		if rows[0][i] != h {
+			t.Errorf("header col %d mismatch: want %q, got %q", i, h, rows[0][i])
+		}
+	}
+
+	// Row 1 checks (Petrova)
+	if rows[1][0] != "RUN-01" {
+		t.Errorf("row 1 AI_Run_ID corrupted: %q", rows[1][0])
+	}
+	if rows[1][2] != "+7 999 222-33-44" {
+		t.Errorf("row 1 Phone mismatch: want '+7 999 222-33-44', got %q", rows[1][2])
+	}
+	if rows[1][3] != "Петрова Анна Сергеевна" {
+		t.Errorf("row 1 FIO mismatch: want 'Петрова Анна Сергеевна', got %q", rows[1][3])
+	}
+	expectedVerdict1 := "Кандидат Петрова Анна Сергеевна рекомендован к найму"
+	if rows[1][4] != expectedVerdict1 {
+		t.Errorf("row 1 AI_Verdict substring mismatch: want %q, got %q", expectedVerdict1, rows[1][4])
+	}
+	if rows[1][5] != "223-344-556 01" {
+		t.Errorf("row 1 SNILS mismatch: want '223-344-556 01', got %q", rows[1][5])
+	}
+	if rows[1][6] != "0.98" {
+		t.Errorf("row 1 Score corrupted: %q", rows[1][6])
+	}
+
+	// Row 2 checks (Ivanov)
+	if rows[2][2] != "+7 999 111-22-33" {
+		t.Errorf("row 2 Phone mismatch: want '+7 999 111-22-33', got %q", rows[2][2])
+	}
+	if rows[2][3] != "Иванов Иван Иванович" {
+		t.Errorf("row 2 FIO mismatch: want 'Иванов Иван Иванович', got %q", rows[2][3])
+	}
+	expectedVerdict2 := "Сотрудник Иванов Иван Иванович прошел проверку"
+	if rows[2][4] != expectedVerdict2 {
+		t.Errorf("row 2 AI_Verdict substring mismatch: want %q, got %q", expectedVerdict2, rows[2][4])
+	}
+	if rows[2][5] != "112-233-445 95" {
+		t.Errorf("row 2 SNILS mismatch: want '112-233-445 95', got %q", rows[2][5])
+	}
+
+	// Row 3 checks: Unmapped candidate
+	if rows[3][3] != "Новиков Игорь" {
+		t.Errorf("row 3 unmapped name corrupted: %q", rows[3][3])
+	}
+}
+
+
+
 
 
 

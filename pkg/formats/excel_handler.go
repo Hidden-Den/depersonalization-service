@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -45,11 +48,28 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 	default:
 	}
 
-	srcFile, err := excelize.OpenReader(r)
+	inputFilePath := ""
+	if p, ok := options["input_path"].(string); ok && p != "" {
+		inputFilePath = p
+	} else if f, ok := r.(*os.File); ok {
+		inputFilePath = f.Name()
+	}
+
+	var srcFile *excelize.File
+	var err error
+	if inputFilePath != "" {
+		srcFile, err = excelize.OpenFile(inputFilePath)
+	} else {
+		srcFile, err = excelize.OpenReader(r)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to open source excel: %w", err)
 	}
 	defer srcFile.Close()
+	defer func() {
+		goruntime.GC()
+		debug.FreeOSMemory()
+	}()
 
 	select {
 	case <-ctx.Done():
@@ -142,8 +162,8 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 		}
 		_ = sampleIter.Close()
 
-		srcMerges, _ := srcFile.GetMergeCells(sheetName)
-		merges := ExtractMergeRanges(srcFile, sheetName)
+		srcMerges := FastExtractMergeRefs(srcFile, inputFilePath, sheetName)
+		merges := ExtractMergeRanges(srcFile, sheetName, sample)
 		headerBounds := DetectHeaderBounds(sample, merges)
 		headers := BuildHierarchicalHeaders(sample, headerBounds.LeafHeaderIdx, merges)
 		var sampleData [][]string
@@ -218,6 +238,7 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 		var pendingDataRows []pendingExcelRow
 
 		rowNum := 1
+		rowBuf := make([]interface{}, 0, 64)
 
 		for rows.Next() {
 			select {
@@ -241,45 +262,64 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 
 			if rowNum < headerBounds.DataStartIdx+1 {
 				// Preamble, top categories, leaf header, or column numbering row: write unaltered
-				headerCells := make([]interface{}, len(colValues))
-				for i, v := range colValues {
-					headerCells[i] = v
+				rowBuf = rowBuf[:0]
+				for _, v := range colValues {
+					rowBuf = append(rowBuf, v)
 				}
-				if err := sw.SetRow(cellCoordinate, headerCells); err != nil {
+				if err := sw.SetRow(cellCoordinate, rowBuf); err != nil {
 					_ = rows.Close()
 					return fmt.Errorf("failed to write header/preamble row %d in sheet %s: %w", rowNum, sheetName, err)
 				}
 			} else {
 				// Data row: anonymize according to detected column types (skipping disabled columns)
-				dataCells := make([]interface{}, len(colValues))
-				for i, v := range colValues {
-					var colType ColumnType
-					col1Based := i + 1
-					if i < len(colTypes) && !disabledMap[col1Based] {
-						colType = colTypes[i]
-					}
-					newVal := ProcessCellWithStrategy(h.Anon, ts, colType, v, strategy, dateRange)
-					dataCells[i] = newVal
-
-					if colType != ColUnknown && strings.TrimSpace(v) != "" && depMap != nil {
-						var headerName string
-						if i < len(headers) {
-							headerName = headers[i]
-						}
-						depMap.AddTargetHeader(headerName)
-						if strategy == domain.StrategyDelete {
-							if !shouldShuffle {
-								depMap.PutCell(sheetName, headerName, rowNum, v)
-							}
-						} else {
-							depMap.Put(newVal, v)
-						}
-					}
-				}
 				if shouldShuffle {
+					dataCells := make([]interface{}, len(colValues))
+					for i, v := range colValues {
+						var colType ColumnType
+						col1Based := i + 1
+						if i < len(colTypes) && !disabledMap[col1Based] {
+							colType = colTypes[i]
+						}
+						newVal := ProcessCellWithStrategy(h.Anon, ts, colType, v, strategy, dateRange)
+						dataCells[i] = newVal
+
+						if colType != ColUnknown && strings.TrimSpace(v) != "" && depMap != nil {
+							var headerName string
+							if i < len(headers) {
+								headerName = headers[i]
+							}
+							depMap.AddTargetHeader(headerName)
+							if strategy != domain.StrategyDelete {
+								depMap.Put(newVal, v)
+							}
+						}
+					}
 					pendingDataRows = append(pendingDataRows, pendingExcelRow{dataCells: dataCells, origCells: colValues})
 				} else {
-					if err := sw.SetRow(cellCoordinate, dataCells); err != nil {
+					rowBuf = rowBuf[:0]
+					for i, v := range colValues {
+						var colType ColumnType
+						col1Based := i + 1
+						if i < len(colTypes) && !disabledMap[col1Based] {
+							colType = colTypes[i]
+						}
+						newVal := ProcessCellWithStrategy(h.Anon, ts, colType, v, strategy, dateRange)
+						rowBuf = append(rowBuf, newVal)
+
+						if colType != ColUnknown && strings.TrimSpace(v) != "" && depMap != nil {
+							var headerName string
+							if i < len(headers) {
+								headerName = headers[i]
+							}
+							depMap.AddTargetHeader(headerName)
+							if strategy == domain.StrategyDelete {
+								depMap.PutCell(sheetName, headerName, rowNum, v)
+							} else {
+								depMap.Put(newVal, v)
+							}
+						}
+					}
+					if err := sw.SetRow(cellCoordinate, rowBuf); err != nil {
 						_ = rows.Close()
 						return fmt.Errorf("failed to write data row %d in sheet %s: %w", rowNum, sheetName, err)
 					}
@@ -344,8 +384,11 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 		}
 
 		// Preserve merged cells from source sheet
-		for _, m := range srcMerges {
-			_ = sw.MergeCell(m.GetStartAxis(), m.GetEndAxis())
+		for _, ref := range srcMerges {
+			parts := strings.Split(ref, ":")
+			if len(parts) == 2 {
+				_ = sw.MergeCell(parts[0], parts[1])
+			}
 		}
 
 		select {

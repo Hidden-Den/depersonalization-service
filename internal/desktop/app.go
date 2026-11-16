@@ -112,6 +112,10 @@ func (a *DesktopApp) GetAppInfo() map[string]string {
 
 // InspectFile inspects the given file and returns its domain.FileInfo.
 func (a *DesktopApp) InspectFile(path string) (*domain.FileInfo, error) {
+	defer func() {
+		goruntime.GC()
+		debug.FreeOSMemory()
+	}()
 	ctx := a.ctx
 	if ctx == nil {
 		ctx = context.Background()
