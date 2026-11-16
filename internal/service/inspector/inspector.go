@@ -430,17 +430,18 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		extraRows++
 		if len(previewRows) < xlsxPreviewRowLimit {
 			cols, colErr := iter.Columns()
-			if colErr == nil {
-				addPreviewRow(cols)
+			if colErr != nil {
+				return nil, fmt.Errorf("failed to read row %d of sheet %s: %w", rowIdx+1, sheetName, colErr)
 			}
+			addPreviewRow(cols)
 		} else if dimensionTrusted {
 			break
 		}
 	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
+	}
 	if !dimensionTrusted {
-		if err := iter.Error(); err != nil {
-			return nil, fmt.Errorf("failed to count rows in sheet %s: %w", sheetName, err)
-		}
 		rowCount = sampleDataRows + extraRows
 	}
 

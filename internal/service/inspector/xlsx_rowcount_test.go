@@ -47,44 +47,56 @@ func writeXLSX(t *testing.T, preamble, firstRow, dataRows int, dimension string)
 		return src
 	}
 
-	dst := filepath.Join(dir, "patched.xlsx")
+	return patchWorksheetXML(t, src, func(data []byte) []byte {
+		if !reSheetDimension.Match(data) {
+			t.Fatalf("worksheet has no <dimension> element to patch")
+		}
+		return reSheetDimension.ReplaceAll(data, []byte(`<dimension ref="`+dimension+`"/>`))
+	})
+}
+
+// patchWorksheetXML copies the workbook at src into a new file, rewriting
+// xl/worksheets/sheet1.xml with edit. Every archive operation is checked so a broken
+// fixture fails the test instead of producing misleading results.
+func patchWorksheetXML(t *testing.T, src string, edit func([]byte) []byte) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "patched.xlsx")
 	zr, err := zip.OpenReader(src)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open source zip: %v", err)
 	}
 	defer zr.Close()
 	out, err := os.Create(dst)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create patched zip: %v", err)
 	}
-	defer out.Close()
 	zw := zip.NewWriter(out)
 	for _, zf := range zr.File {
 		rc, err := zf.Open()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("open zip entry %s: %v", zf.Name, err)
 		}
 		data, err := io.ReadAll(rc)
 		_ = rc.Close()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("read zip entry %s: %v", zf.Name, err)
 		}
 		if zf.Name == "xl/worksheets/sheet1.xml" {
-			if !reSheetDimension.Match(data) {
-				t.Fatalf("worksheet has no <dimension> element to patch")
-			}
-			data = reSheetDimension.ReplaceAll(data, []byte(`<dimension ref="`+dimension+`"/>`))
+			data = edit(data)
 		}
 		w, err := zw.Create(zf.Name)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("create zip entry %s: %v", zf.Name, err)
 		}
 		if _, err := w.Write(data); err != nil {
-			t.Fatal(err)
+			t.Fatalf("write zip entry %s: %v", zf.Name, err)
 		}
 	}
 	if err := zw.Close(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("finalize patched zip: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("close patched zip: %v", err)
 	}
 	return dst
 }
@@ -148,39 +160,33 @@ func TestInspectXLSX_NoDimensionCountsRows(t *testing.T) {
 	}
 }
 
+// corruptCellRef makes the given cell reference unparsable in the worksheet XML.
+func corruptCellRef(t *testing.T, path, cell string) string {
+	t.Helper()
+	return patchWorksheetXML(t, path, func(data []byte) []byte {
+		patched := regexp.MustCompile(`r="`+cell+`"`).ReplaceAll(data, []byte(`r="!!1"`))
+		if string(patched) == string(data) {
+			t.Fatalf("cell %s not found in worksheet XML", cell)
+		}
+		return patched
+	})
+}
+
 // A row that cannot be read must fail the inspection instead of being reported as the end
 // of the sheet (which would silently truncate the row count).
 func TestInspectXLSX_CorruptRowIsAnError(t *testing.T) {
-	path := writeXLSX(t, 0, 1, 5, "")
-	dst := filepath.Join(t.TempDir(), "corrupt.xlsx")
-	zr, err := zip.OpenReader(path)
-	if err != nil {
-		t.Fatal(err)
+	path := corruptCellRef(t, writeXLSX(t, 0, 1, 5, ""), "B3")
+	if _, err := inspector.New().Inspect(context.Background(), path); err == nil {
+		t.Fatal("expected an error for an unreadable row inside the header sample, got nil")
 	}
-	defer zr.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw := zip.NewWriter(out)
-	for _, zf := range zr.File {
-		rc, _ := zf.Open()
-		data, _ := io.ReadAll(rc)
-		_ = rc.Close()
-		if zf.Name == "xl/worksheets/sheet1.xml" {
-			patched := regexp.MustCompile(`r="B3"`).ReplaceAll(data, []byte(`r="!!3"`))
-			if string(patched) == string(data) {
-				t.Fatal("cell B3 not found in worksheet XML")
-			}
-			data = patched
-		}
-		w, _ := zw.Create(zf.Name)
-		_, _ = w.Write(data)
-	}
-	_ = zw.Close()
-	_ = out.Close()
+}
 
-	if _, err := inspector.New().Inspect(context.Background(), dst); err == nil {
-		t.Fatal("expected an error for an unreadable row, got nil")
+// The same applies to rows read past the sample to fill the preview, also when the
+// dimension is trusted and no exact count is needed.
+func TestInspectXLSX_CorruptRowAfterSampleIsAnError(t *testing.T) {
+	// Header on row 36, data rows 37..66: preview rows 6..10 come from rows 42..46.
+	path := corruptCellRef(t, writeXLSX(t, 35, 36, 30, "A1:C66"), "B44")
+	if _, err := inspector.New().Inspect(context.Background(), path); err == nil {
+		t.Fatal("expected an error for an unreadable row past the sample, got nil")
 	}
 }
