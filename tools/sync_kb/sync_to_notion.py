@@ -600,6 +600,7 @@ def main():
 
     # 5. Синхронизация 27 актуальных статей
     print(f"5. Синхронизация {len(FAQ_ITEMS)} актуальных статей...")
+    claimed_page_ids = set()
     for idx, item in enumerate(FAQ_ITEMS, 1):
         q = item["question"]
         paragraphs = [p.strip() for p in item["body"].split("\n\n") if p.strip()]
@@ -648,10 +649,17 @@ def main():
         try:
             target_page_id = existing_pages.get(q)
             if not target_page_id:
+                # Fallback for a renamed article: reuse a page with a similar title, but never
+                # one that belongs to another current question (e.g. two questions starting with
+                # "Что делать, если при…") or that another article has already claimed.
                 for old_q, old_id in existing_pages.items():
+                    if old_q in current_questions or old_id in claimed_page_ids:
+                        continue
                     if old_q[:20].lower() == q[:20].lower():
                         target_page_id = old_id
                         break
+            if target_page_id:
+                claimed_page_ids.add(target_page_id)
 
             if target_page_id:
                 print(f"[{idx}/{len(FAQ_ITEMS)}] Обновление: '{q}'...")
