@@ -1,7 +1,7 @@
 # Деперсонализация ПД (152-ФЗ РФ)
 
-[![Версия v1.16.0](https://img.shields.io/badge/Версия-v1.16.0-065F46?style=flat-square)](https://github.com/Nuteres/depersonalization-service/releases/latest)
-[![История изменений](https://img.shields.io/badge/Changelog-v1.16.0-1C1917?style=flat-square)](CHANGELOG.md)
+[![Версия v1.16.1](https://img.shields.io/badge/Версия-v1.16.1-065F46?style=flat-square)](https://github.com/Nuteres/depersonalization-service/releases/latest)
+[![История изменений](https://img.shields.io/badge/Changelog-v1.16.1-1C1917?style=flat-square)](CHANGELOG.md)
 [![152-ФЗ / Приказ РКН № 140](https://img.shields.io/badge/152--ФЗ%20|%20Приказ%20РКН%20№%20140-Соответствие-065F46?style=flat-square)](#нормативная-база)
 [![Air-Gapped](https://img.shields.io/badge/Security-100%25%20Air--Gapped-1C1917?style=flat-square)](#ключевые-гарантии-и-возможности)
 [![AES-256-GCM](https://img.shields.io/badge/Encryption-AES--256--GCM-0F172A?style=flat-square)](#ключевые-гарантии-и-возможности)
