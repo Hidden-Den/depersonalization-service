@@ -302,20 +302,15 @@ func streamExtractMergeRefsFromZip(zipPath, sheetName string) ([]string, error) 
 	// <mergeCells> container (optionally namespace-prefixed, e.g. <x:mergeCells>). Only the
 	// container itself is handed to a real XML decoder, so references are never lost on
 	// read-chunk boundaries and attribute quoting/order does not matter.
-	const keepTail = 256 // enough to hold "<" + namespace prefix + "mergeCells" across reads
 	buf := make([]byte, 64*1024)
-	var pending []byte
+	scanner := xmlStartTagScanner{local: mergeCellsTag}
 
 	for {
 		n, readErr := rc.Read(buf)
 		if n > 0 {
-			pending = append(pending, buf[:n]...)
-			if pos := findXMLStartTag(pending, mergeCellsTag); pos >= 0 {
-				dec := xml.NewDecoder(io.MultiReader(bytes.NewReader(pending[pos:]), rc))
+			if pos := scanner.feed(buf[:n]); pos >= 0 {
+				dec := xml.NewDecoder(io.MultiReader(bytes.NewReader(scanner.pending[pos:]), rc))
 				return decodeMergeCells(dec)
-			}
-			if len(pending) > keepTail {
-				pending = append(pending[:0], pending[len(pending)-keepTail:]...)
 			}
 		}
 		if readErr != nil {
@@ -328,7 +323,75 @@ func streamExtractMergeRefsFromZip(zipPath, sheetName string) ([]string, error) 
 	}
 }
 
-var mergeCellsTag = []byte("mergeCells")
+var (
+	mergeCellsTag      = []byte("mergeCells")
+	xmlMarkupDeclStart = []byte("<!")
+	xmlCommentStart    = []byte("<!--")
+	xmlCommentEnd      = []byte("-->")
+	xmlCDATAStart      = []byte("<![CDATA[")
+	xmlCDATAEnd        = []byte("]]>")
+)
+
+// xmlStartTagScannerTail is enough to hold "<" + namespace prefix + local name across reads.
+const xmlStartTagScannerTail = 256
+
+// xmlStartTagScanner finds the start tag of an element in a byte stream without parsing the
+// XML in between. Comments and CDATA sections are skipped, so markup-like text inside them
+// (e.g. a cell containing "<![CDATA[<mergeCells>...]]>") is never mistaken for the element.
+type xmlStartTagScanner struct {
+	local   []byte
+	pending []byte // unscanned bytes; feed results are offsets into it
+	skipEnd []byte // terminator of the comment/CDATA section being skipped, nil otherwise
+}
+
+// feed appends data and returns the offset of the tag's '<' in s.pending, or -1 if more
+// input is needed.
+func (s *xmlStartTagScanner) feed(data []byte) int {
+	s.pending = append(s.pending, data...)
+	for {
+		if s.skipEnd != nil {
+			i := bytes.Index(s.pending, s.skipEnd)
+			if i < 0 {
+				s.keepTail(len(s.skipEnd) - 1)
+				return -1
+			}
+			s.pending = s.pending[i+len(s.skipEnd):]
+			s.skipEnd = nil
+			continue
+		}
+
+		pos := findXMLStartTag(s.pending, s.local)
+		bang := bytes.Index(s.pending, xmlMarkupDeclStart)
+		if bang < 0 || (pos >= 0 && pos < bang) {
+			if pos >= 0 {
+				return pos
+			}
+			s.keepTail(xmlStartTagScannerTail)
+			return -1
+		}
+
+		rest := s.pending[bang:]
+		switch {
+		case bytes.HasPrefix(rest, xmlCommentStart):
+			s.pending, s.skipEnd = rest[len(xmlCommentStart):], xmlCommentEnd
+		case bytes.HasPrefix(rest, xmlCDATAStart):
+			s.pending, s.skipEnd = rest[len(xmlCDATAStart):], xmlCDATAEnd
+		case bytes.HasPrefix(xmlCommentStart, rest) || bytes.HasPrefix(xmlCDATAStart, rest):
+			// The opener is split across reads: wait for more input.
+			s.pending = rest
+			return -1
+		default:
+			// Another declaration (e.g. <!DOCTYPE>): nothing to skip.
+			s.pending = rest[len(xmlMarkupDeclStart):]
+		}
+	}
+}
+
+func (s *xmlStartTagScanner) keepTail(n int) {
+	if len(s.pending) > n {
+		s.pending = append(s.pending[:0], s.pending[len(s.pending)-n:]...)
+	}
+}
 
 // findXMLStartTag returns the offset of the '<' that opens a start tag with the given local
 // name (with or without a namespace prefix), or -1 if no complete tag name is present in data.

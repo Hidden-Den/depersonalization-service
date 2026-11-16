@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -21,6 +19,13 @@ import (
 )
 
 const defaultPreviewSalt = "preview-salt-152fz"
+
+const (
+	// xlsxInspectSampleRows is how many leading rows are read to detect the header block.
+	xlsxInspectSampleRows = 40
+	// xlsxPreviewRowLimit is the number of before/after rows shown on the inspection screen.
+	xlsxPreviewRowLimit = 10
+)
 
 // Inspector provides document analysis and inspection across supported formats.
 type Inspector struct{}
@@ -281,7 +286,7 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		return nil, fmt.Errorf("failed to read rows from sheet %s: %w", sheetName, err)
 	}
 	var sample [][]string
-	for sampleIter.Next() && len(sample) < 40 {
+	for len(sample) < xlsxInspectSampleRows && sampleIter.Next() {
 		if ctx != nil && ctx.Err() != nil {
 			_ = sampleIter.Close()
 			return nil, ctx.Err()
@@ -337,13 +342,17 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 
 	ts := anonymizer.NewTokenSession(defaultPreviewSalt)
 	var previewRows []domain.PreviewRow
-
-	// Preview rows (up to 10) directly from sample data
-	for i := bounds.DataStartIdx; i < len(sample) && len(previewRows) < 10; i++ {
-		if ctx != nil && ctx.Err() != nil {
-			return nil, ctx.Err()
+	sheetInfo := func(rowCount int) *domain.SheetInfo {
+		return &domain.SheetInfo{
+			Name:        sheetName,
+			Index:       sheetIndex,
+			RowCount:    rowCount,
+			Headers:     headers,
+			Entities:    entities,
+			PreviewRows: previewRows,
 		}
-		cols := sample[i]
+	}
+	addPreviewRow := func(cols []string) {
 		before := make([]string, len(headers))
 		after := make([]string, len(headers))
 		for j := 0; j < len(headers); j++ {
@@ -365,62 +374,92 @@ func inspectSingleSheet(ctx context.Context, xl *excelize.File, sheetName string
 		})
 	}
 
-	// Fast total row count determination via worksheet dimension
-	rowCount := 0
+	// Preview rows from the already-read sample.
+	for i := bounds.DataStartIdx; i < len(sample) && len(previewRows) < xlsxPreviewRowLimit; i++ {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		addPreviewRow(sample[i])
+	}
+
+	sampleDataRows := len(sample) - bounds.DataStartIdx
+	if sampleDataRows < 0 {
+		sampleDataRows = 0
+	}
+	rowCount := sampleDataRows
+
+	// The sample stopped before the limit: the whole sheet is already read.
+	if len(sample) < xlsxInspectSampleRows {
+		return sheetInfo(rowCount), nil
+	}
+
+	// excelize.Rows yields empty rows for gaps, so sample index i is worksheet row i+1 and the
+	// last row of the <dimension> ref maps directly onto it. The dimension is metadata written by
+	// the producing application, so it is trusted only when it is consistent with the rows already
+	// read (a stale or truncated ref falls back to an exact scan).
+	dimLastRow := worksheetDimensionLastRow(xl, sheetName)
+	dimensionTrusted := dimLastRow >= len(sample)
+	if dimensionTrusted {
+		rowCount = dimLastRow - bounds.DataStartIdx
+		if len(previewRows) >= xlsxPreviewRowLimit {
+			return sheetInfo(rowCount), nil
+		}
+	}
+
+	// Read past the sample: fill the preview (e.g. after a long preamble) and, when the
+	// dimension cannot be trusted, count the remaining rows exactly.
+	iter, err := xl.Rows(sheetName)
+	if err != nil {
+		return sheetInfo(rowCount), nil
+	}
+	defer iter.Close()
+	extraRows := 0
+	for rowIdx := 0; iter.Next(); rowIdx++ {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if rowIdx < len(sample) {
+			continue
+		}
+		extraRows++
+		if len(previewRows) < xlsxPreviewRowLimit {
+			cols, colErr := iter.Columns()
+			if colErr == nil {
+				addPreviewRow(cols)
+			}
+		} else if dimensionTrusted {
+			break
+		}
+	}
+	if !dimensionTrusted {
+		rowCount = sampleDataRows + extraRows
+	}
+
+	return sheetInfo(rowCount), nil
+}
+
+// worksheetDimensionLastRow returns the last row of the sheet's <dimension> ref
+// (e.g. 120000 for "A1:K120000"), or 0 when the ref is absent or a single cell.
+func worksheetDimensionLastRow(xl *excelize.File, sheetName string) int {
 	dim, err := xl.GetSheetDimension(sheetName)
-	if err == nil && strings.Contains(dim, ":") {
-		parts := strings.Split(dim, ":")
-		if len(parts) >= 2 {
-			_, r, err := excelize.SplitCellName(parts[len(parts)-1])
-			if err == nil && r > bounds.DataStartIdx {
-				rowCount = r - bounds.DataStartIdx
-			}
-		}
+	if err != nil {
+		return 0
 	}
-
-	// Fallback row count only if dimension attribute is absent, "A1", or invalid
-	if rowCount == 0 {
-		for i := bounds.DataStartIdx; i < len(sample); i++ {
-			rowCount++
-		}
-		if len(sample) >= 40 {
-			remainingIter, err := xl.Rows(sheetName)
-			if err == nil {
-				skipped := 0
-				for remainingIter.Next() {
-					if ctx != nil && ctx.Err() != nil {
-						_ = remainingIter.Close()
-						return nil, ctx.Err()
-					}
-					skipped++
-					if skipped > len(sample) {
-						rowCount++
-					}
-				}
-				_ = remainingIter.Close()
-			}
-		}
+	parts := strings.Split(dim, ":")
+	if len(parts) != 2 {
+		return 0
 	}
-
-	return &domain.SheetInfo{
-		Name:        sheetName,
-		Index:       sheetIndex,
-		RowCount:    rowCount,
-		Headers:     headers,
-		Entities:    entities,
-		PreviewRows: previewRows,
-	}, nil
+	_, lastRow, err := excelize.SplitCellName(parts[1])
+	if err != nil {
+		return 0
+	}
+	return lastRow
 }
 
 func inspectXLSX(ctx context.Context, path string) (*domain.FileInfo, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-
-	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-	}()
 
 	stat, err := os.Stat(path)
 	if err != nil {

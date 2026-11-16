@@ -113,7 +113,7 @@ func (a *DesktopApp) GetAppInfo() map[string]string {
 // InspectFile inspects the given file and returns its domain.FileInfo.
 func (a *DesktopApp) InspectFile(path string) (*domain.FileInfo, error) {
 	defer func() {
-		goruntime.GC()
+		// Return heap pages of the finished heavy operation to the OS (FreeOSMemory forces a GC).
 		debug.FreeOSMemory()
 	}()
 	ctx := a.ctx
@@ -265,7 +265,7 @@ func (a *DesktopApp) ProcessFileWithOptions(opts domain.ProcessOptions) (*domain
 		a.cancel = nil
 		a.cancelMu.Unlock()
 		cancel()
-		goruntime.GC()
+		// Return heap pages of the finished heavy operation to the OS (FreeOSMemory forces a GC).
 		debug.FreeOSMemory()
 	}()
 
@@ -301,7 +301,7 @@ func (a *DesktopApp) IsOperationRunning() bool {
 // InspectKeyFile inspects a .depmap key file, validates its header, and tests password if provided.
 func (a *DesktopApp) InspectKeyFile(keyPath, password string) (*domain.KeyFileInfo, error) {
 	defer func() {
-		goruntime.GC()
+		// Return heap pages of the finished heavy operation to the OS (FreeOSMemory forces a GC).
 		debug.FreeOSMemory()
 	}()
 	info, err := a.km.InspectKey(keyPath, password)
@@ -339,7 +339,7 @@ func (a *DesktopApp) RestoreFileTo(inputPath, keyPath, password, destPath string
 		a.cancel = nil
 		a.cancelMu.Unlock()
 		cancel()
-		goruntime.GC()
+		// Return heap pages of the finished heavy operation to the OS (FreeOSMemory forces a GC).
 		debug.FreeOSMemory()
 	}()
 

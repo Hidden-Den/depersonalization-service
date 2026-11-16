@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -115,10 +113,6 @@ func getXLSXRowsForSheet(ctx context.Context, path string, targetSheet string, o
 		return nil, fmt.Errorf("failed to open xlsx file: %w", err)
 	}
 	defer xl.Close()
-	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-	}()
 
 	sheets := xl.GetSheetList()
 	if len(sheets) == 0 {

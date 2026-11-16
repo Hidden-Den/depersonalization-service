@@ -106,6 +106,8 @@ func TestFastExtractMergeRefs_NamespacePrefixedWorksheet(t *testing.T) {
 	dst := filepath.Join(dir, "prefixed.xlsx")
 	rewriteZipEntries(t, src, dst, map[string]func(string) string{
 		"xl/worksheets/sheet1.xml": func(s string) string {
+			// Declare the prefix on the root element, as OpenXML SDK does.
+			s = strings.Replace(s, "<worksheet ", `<worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main" `, 1)
 			s = strings.ReplaceAll(s, "<mergeCells", "<x:mergeCells")
 			s = strings.ReplaceAll(s, "</mergeCells", "</x:mergeCells")
 			s = strings.ReplaceAll(s, "<mergeCell ", "<x:mergeCell ")
@@ -189,4 +191,52 @@ func TestFastExtractMergeRefs_AbsoluteRelationshipTarget(t *testing.T) {
 	if strings.Join(refs, ",") != "A1:B2" {
 		t.Fatalf("expected [A1:B2], got %v", refs)
 	}
+}
+
+// Markup-like text inside CDATA sections and XML comments must not be taken for the real
+// <mergeCells> block, including sections larger than one read chunk.
+func TestFastExtractMergeRefs_SkipsCommentsAndCDATA(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.xlsx")
+	saveMergedWorkbook(t, src, [][2]string{{"A1", "C1"}})
+
+	fake := `<mergeCells count="1"><mergeCell ref="Z1:Z9"/></mergeCells>`
+	padding := strings.Repeat("a", 150*1024)
+	dst := filepath.Join(dir, "cdata.xlsx")
+	rewriteZipEntries(t, src, dst, map[string]func(string) string{
+		"xl/worksheets/sheet1.xml": func(s string) string {
+			s = strings.Replace(s, "<sheetData>", "<!-- "+fake+" --><sheetData>", 1)
+			cell := `<row r="50"><c r="A50" t="inlineStr"><is><t><![CDATA[` + padding + fake + `]]></t></is></c></row>`
+			return strings.Replace(s, "</sheetData>", cell+"</sheetData>", 1)
+		},
+	})
+
+	refs, err := streamExtractMergeRefsFromZip(dst, "Sheet1")
+	if err != nil {
+		t.Fatalf("stream extraction failed: %v", err)
+	}
+	if strings.Join(refs, ",") != "A1:C1" {
+		t.Fatalf("expected only the real merge [A1:C1], got %v", refs)
+	}
+}
+
+// Feeding the scanner one byte at a time splits every opener, terminator and tag name.
+func TestXMLStartTagScanner_ByteByByte(t *testing.T) {
+	doc := `<worksheet><sheetData><row><c><is><t><![CDATA[<mergeCells>]]></t></is></c></row></sheetData>` +
+		`<!-- <mergeCells> --><!DOCTYPE x><mergeCellsX/><x:mergeCells count="1"><x:mergeCell ref="A1:B1"/></x:mergeCells></worksheet>`
+	want := strings.Index(doc, "<x:mergeCells ")
+
+	s := xmlStartTagScanner{local: mergeCellsTag}
+	consumed := 0
+	for i := 0; i < len(doc); i++ {
+		if pos := s.feed([]byte{doc[i]}); pos >= 0 {
+			got := consumed + 1 - len(s.pending) + pos
+			if got != want {
+				t.Fatalf("found tag at offset %d, want %d", got, want)
+			}
+			return
+		}
+		consumed++
+	}
+	t.Fatal("real <x:mergeCells> start tag was not found")
 }

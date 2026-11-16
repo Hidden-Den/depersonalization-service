@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -48,11 +46,24 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 	default:
 	}
 
+	// excelize.OpenFile reads the zip through io.ReaderAt instead of buffering the whole
+	// workbook like OpenReader, so the path is used when the caller states it explicitly.
+	// The path is then reopened (by excelize and for merge-cell extraction), so it must keep
+	// pointing at the very file behind r: verifySource guards against replacement or edits.
 	inputFilePath := ""
+	verifySource := func() error { return nil }
 	if p, ok := options["input_path"].(string); ok && p != "" {
 		inputFilePath = p
-	} else if f, ok := r.(*os.File); ok {
-		inputFilePath = f.Name()
+		if f, ok := r.(*os.File); ok {
+			initial, err := f.Stat()
+			if err != nil {
+				return fmt.Errorf("failed to stat source excel: %w", err)
+			}
+			verifySource = func() error { return verifySameSourceFile(initial, inputFilePath) }
+			if err := verifySource(); err != nil {
+				return err
+			}
+		}
 	}
 
 	var srcFile *excelize.File
@@ -66,10 +77,9 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 		return fmt.Errorf("failed to open source excel: %w", err)
 	}
 	defer srcFile.Close()
-	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-	}()
+	if err := verifySource(); err != nil {
+		return err
+	}
 
 	select {
 	case <-ctx.Done():
@@ -410,9 +420,28 @@ func (h *ExcelHandler) Process(ctx context.Context, r io.Reader, w io.Writer, op
 
 	outFile.SetActiveSheet(0)
 
+	// Merge refs were re-read from inputFilePath per sheet: make sure the source did not
+	// change while it was being processed.
+	if err := verifySource(); err != nil {
+		return err
+	}
+
 	if err := outFile.Write(w); err != nil {
 		return fmt.Errorf("failed to write output excel: %w", err)
 	}
 
+	return nil
+}
+
+// verifySameSourceFile reports an error when path no longer refers to the file described by
+// initial (the handle the caller opened), or when that file was modified since.
+func verifySameSourceFile(initial os.FileInfo, path string) error {
+	current, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat source excel %s: %w", path, err)
+	}
+	if !os.SameFile(initial, current) || initial.Size() != current.Size() || !initial.ModTime().Equal(current.ModTime()) {
+		return fmt.Errorf("source excel %s was modified or replaced during processing", path)
+	}
 	return nil
 }

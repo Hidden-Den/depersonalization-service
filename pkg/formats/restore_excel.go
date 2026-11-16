@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	goruntime "runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
@@ -128,10 +126,6 @@ func RestoreExcel(ctx context.Context, inputPath, outputPath string, dm *depmap.
 	outFile := excelize.NewFile()
 	defer outFile.Close()
 
-	defer func() {
-		goruntime.GC()
-		debug.FreeOSMemory()
-	}()
 
 	for sheetIdx, sheetName := range sheetList {
 		select {
