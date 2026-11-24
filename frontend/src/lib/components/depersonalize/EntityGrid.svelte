@@ -56,6 +56,14 @@
   function toggle(colIndex: number) {
     tableState.toggleColumn(activeSheetName, colIndex);
   }
+
+  function setAll(enabled: boolean) {
+    tableState.setColumnsEnabled(
+      activeSheetName,
+      entities.map((ent) => ent.columnIndex),
+      enabled
+    );
+  }
 </script>
 
 {#if appState.currentFileInfo}
@@ -80,9 +88,19 @@
         <span class="text-xs font-semibold text-[#1C1917] tracking-tight">
           Категории данных
         </span>
-        <span id="entity-count-badge" class="text-xs font-mono text-[#78716C]">
-          {activeCount} / {totalCount}
-        </span>
+        <div class="flex items-center gap-3">
+          <button
+            id="entity-toggle-all"
+            type="button"
+            onclick={() => setAll(activeCount === 0)}
+            class="text-xs font-medium text-[#57534E] hover:text-[#1C1917] cursor-pointer transition-colors"
+          >
+            {activeCount === 0 ? 'Выделить всё' : 'Снять всё'}
+          </button>
+          <span id="entity-count-badge" class="text-xs font-mono text-[#78716C]">
+            {activeCount} / {totalCount}
+          </span>
+        </div>
       </div>
 
       <!-- Entity Cards Grid -->

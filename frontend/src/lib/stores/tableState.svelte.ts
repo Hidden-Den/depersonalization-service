@@ -47,6 +47,19 @@ class TableState {
     };
   }
 
+  /** Включает (enabled=true) или исключает из обработки все переданные колонки листа разом. */
+  setColumnsEnabled(sheetName: string, colIndexes: number[], enabled: boolean): void {
+    const current = this.disabledColumnsBySheet[sheetName] || [];
+    const next = enabled
+      ? current.filter((c) => !colIndexes.includes(c))
+      : [...new Set([...current, ...colIndexes])];
+
+    this.disabledColumnsBySheet = {
+      ...this.disabledColumnsBySheet,
+      [sheetName]: next
+    };
+  }
+
   isColumnDisabled(sheetName: string, colIndex: number): boolean {
     const list = this.disabledColumnsBySheet[sheetName];
     return list ? list.includes(colIndex) : false;
