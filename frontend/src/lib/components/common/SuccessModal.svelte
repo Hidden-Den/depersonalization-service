@@ -2,21 +2,13 @@
   import { appState } from '../../stores/appState.svelte';
   import { OpenContainingFolder } from '../../api/wails';
   import { copyToClipboard } from '../../services/clipboard';
+  import { splitPath } from '../../utils/path';
 
   let copiedPassword = $state(false);
   let copiedArchivePassword = $state(false);
 
-  function getDirectory(filePath: string): string {
-    if (!filePath) return '';
-    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-    return lastSlash >= 0 ? filePath.slice(0, lastSlash) : filePath;
-  }
-
-  function getFileName(filePath: string): string {
-    if (!filePath) return '';
-    const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
-    return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
-  }
+  const getDirectory = (filePath: string) => splitPath(filePath).dir;
+  const getFileName = (filePath: string) => splitPath(filePath).filename;
 
   function formatDuration(ms: number): string {
     if (ms < 1000) {

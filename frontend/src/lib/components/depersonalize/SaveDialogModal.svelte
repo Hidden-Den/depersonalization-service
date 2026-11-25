@@ -27,7 +27,8 @@
   let createKey = $state(true);
   let keyPassword = $state('');
   let showPassword = $state(false);
-  let passwordValidation = $state<PasswordValidationResult>({
+  // Пустой пароль допустим: бэкенд сгенерирует его автоматически.
+  const EMPTY_PASSWORD_VALIDATION: PasswordValidationResult = {
     valid: true,
     score: 0,
     errors: [],
@@ -37,7 +38,8 @@
     hasDigit: false,
     hasSpecial: false,
     onlyLatin: false,
-  });
+  };
+  let passwordValidation = $state<PasswordValidationResult>(EMPTY_PASSWORD_VALIDATION);
   let outputPath = $state('');
   let keyPath = $state('');
   let selectedExportFormat = $state('xlsx');
@@ -48,44 +50,34 @@
   let showArchivePassword = $state(false);
   let archivePath = $state('');
 
-  function getArchivePasswordError(pwd: string): string {
-    const trimmed = pwd.trim();
-    if (!trimmed) return '';
-    if (pwd.length < 4) return 'Пароль архива должен содержать не менее 4 символов';
-    if (pwd !== trimmed) return 'Пароль архива не должен содержать пробелов';
-    for (let i = 0; i < pwd.length; i++) {
-      const code = pwd.charCodeAt(i);
-      if (code < 33 || code > 126) {
-        return 'Пароль архива может содержать только латиницу, цифры и спецсимволы без пробелов';
-      }
-    }
-    return '';
-  }
+  // Правила паролей живут только в Go; интерфейс лишь показывает результат проверки.
+  let archivePasswordError = $state('');
 
-  const archivePasswordError = $derived(
-    createArchive && archivePassword.trim() ? getArchivePasswordError(archivePassword) : ''
-  );
+  $effect(() => {
+    const pwd = archivePassword;
+    if (!createArchive || !pwd.trim()) {
+      archivePasswordError = '';
+      return;
+    }
+    ValidateArchivePassword(pwd)
+      .then((msg) => {
+        if (pwd === archivePassword) archivePasswordError = msg;
+      })
+      .catch((err) => console.error('Failed to validate archive password:', err));
+  });
 
   // Real-time password validation for key
   $effect(() => {
-    const trimmed = keyPassword.trim();
-    if (!trimmed) {
-      passwordValidation = {
-        valid: true,
-        score: 0,
-        errors: [],
-        minLength: false,
-        hasUppercase: false,
-        hasLowercase: false,
-        hasDigit: false,
-        hasSpecial: false,
-        onlyLatin: false,
-      };
-    } else {
-      ValidateKeyPassword(keyPassword).then((res) => {
-        passwordValidation = res;
-      });
+    const pwd = keyPassword;
+    if (!pwd.trim()) {
+      passwordValidation = EMPTY_PASSWORD_VALIDATION;
+      return;
     }
+    ValidateKeyPassword(pwd)
+      .then((res) => {
+        if (pwd === keyPassword) passwordValidation = res;
+      })
+      .catch((err) => console.error('Failed to validate key password:', err));
   });
 
   const isPasswordValid = $derived(
@@ -833,7 +825,7 @@
                     <svg class="w-3.5 h-3.5 text-[#DC2626] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                     </svg>
-                    <span>{archivePasswordError}</span>
+                    <span class="first-letter:uppercase">{archivePasswordError}</span>
                   </div>
                 {:else}
                   <p class="text-[11px] text-[#78716C] leading-relaxed font-sans">

@@ -176,7 +176,15 @@ graph TD
 
 ## 3. Взаимодействие компонентов (IPC Wails)
 
-Связь между фронтендом Svelte 5 и Go-бэкендом осуществляется через типизированный фасад `frontend/src/lib/api/wails.ts` и мост Wails:
+Связь между фронтендом Svelte 5 и Go-бэкендом осуществляется через типизированный фасад `frontend/src/lib/api/wails.ts` и мост Wails.
+
+Фасад — тонкий слой над `window.go.desktop.DesktopApp` и `window.runtime`: сгенерированные Wails CLI файлы `wailsjs/` не используются, потому что приложение собирается обычным `go build`, и сигнатуры в `wails.ts` ведутся вручную по Go-методам. Фасад экспортирует только методы, которые вызывает интерфейс, и не содержит моков: вне Wails любой вызов бэкенда отклоняется с ошибкой «Бэкенд приложения недоступен», а подписки на события и drag-and-drop отключаются с предупреждением в консоли. Правила проверки паролей (ключа и архива) реализованы только в Go, интерфейс показывает результат.
+
+Привязанный метод Wails v2 должен возвращать одно значение или пару `(значение, error)`: при двух результатах, второй из которых не `error`, до JS доходит только первый. Это проверяет тест `TestDesktopApp_BoundMethodsReturnShape`.
+
+Методы `GetTableRows`, `ProcessFile`, `ProcessFileTo`, `ProcessFileWithSheets` и `IsOperationRunning` интерфейсом не вызываются и остаются для Go-тестов и обратной совместимости.
+
+
 
 | Метод Wails Go | Аргументы | Назначение |
 |---|---|---|
@@ -205,7 +213,7 @@ graph TD
 | `SetClipboardText` | `(text)` | Запись текста в системный буфер обмена через Wails runtime |
 | `ValidateKeyPassword` | `(password)` | Проверка пароля ключа `.depmap` на соответствие политике безопасности |
 | `GenerateArchivePassword` | `()` | Генерация стойкого 16-значного пароля для ZIP-архива |
-| `ValidateArchivePassword` | `(password)` | Проверка пароля архива на соответствие требованиям ASCII |
+| `ValidateArchivePassword` | `(password)` | Проверка пароля архива на соответствие требованиям ASCII; возвращает текст ошибки или пустую строку |
 
 ---
 
@@ -241,7 +249,7 @@ graph TD
 
 ## 6. Версионирование (Semantic Versioning)
 
-- **Единый источник правды**: константа `Version` в `internal/version/version.go` (`const Version = "1.17.0"`).
+- **Единый источник правды**: константа `Version` в `internal/version/version.go` (`const Version = "1.17.1"`).
 - Метод `GetAppInfo()` возвращает версию для отображения в шапке окна.
 - Версия синхронизирована с `frontend/package.json` и `Makefile`.
 - История релизов фиксируется в `CHANGELOG.md` в соответствии с регламентом [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/).

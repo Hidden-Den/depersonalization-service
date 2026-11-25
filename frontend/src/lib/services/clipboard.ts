@@ -4,11 +4,10 @@ import { SetClipboardText } from '../api/wails';
  * Universal cross-platform clipboard copy utility.
  * Guarantees reliable text copying across all desktop webviews (WebKitGTK on Linux,
  * WebView2 on Windows, WKWebView on macOS) as well as modern browsers,
- * using a 4-layer fallback mechanism:
- * 1. Backend Wails runtime (runtime.ClipboardSetText via native OS APIs).
- * 2. Window runtime ClipboardSetText if exposed.
- * 3. Modern browser navigator.clipboard.writeText.
- * 4. Legacy document.execCommand('copy') via temporary textarea.
+ * using a 3-layer fallback mechanism:
+ * 1. Go backend (runtime.ClipboardSetText via native OS APIs).
+ * 2. Modern browser navigator.clipboard.writeText.
+ * 3. Legacy document.execCommand('copy') via temporary textarea.
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
   if (!text) return false;
@@ -23,20 +22,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     console.warn('[Clipboard] Backend SetClipboardText error:', err);
   }
 
-  // Layer 2: Window Wails runtime direct call
-  try {
-    const win = typeof window !== 'undefined' ? (window as any) : undefined;
-    if (win?.runtime?.ClipboardSetText) {
-      const ok = await win.runtime.ClipboardSetText(text);
-      if (ok) {
-        return true;
-      }
-    }
-  } catch (err) {
-    console.warn('[Clipboard] window.runtime.ClipboardSetText error:', err);
-  }
-
-  // Layer 3: Standard Browser Clipboard API
+  // Layer 2: Standard Browser Clipboard API
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       await navigator.clipboard.writeText(text);
@@ -46,7 +32,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     console.warn('[Clipboard] navigator.clipboard.writeText restricted or failed:', err);
   }
 
-  // Layer 4: Fallback DOM execCommand('copy')
+  // Layer 3: Fallback DOM execCommand('copy')
   try {
     if (typeof document !== 'undefined') {
       const textArea = document.createElement('textarea');
