@@ -29,6 +29,8 @@
     anonymized: string;
     cssRect: { left: number; top: number; width: number; height: number };
     pdfBox: PDFRedactionBox;
+    /** Нормализованное значение из Go, по которому найдена эта область. */
+    source: string;
   }
 
   interface RenderedPageData {
@@ -80,6 +82,15 @@
         if (ent.original && ent.original.trim().length > 1) {
           activeTerms.push(ent.original.trim());
         }
+      }
+    }
+    // Значения, которые Go нашёл, а превью не смогло разместить на странице
+    // (другая разбивка текста в pdf.js), передаём строками: при наличии рамок
+    // обработчик PDF не ищет ПДн сам, и без этого они остались бы открытыми.
+    const located = new Set(allDetectedEntities.map((e) => e.source));
+    for (const snip of uniqueSnippets(fileInfo?.textSnippets)) {
+      if (!located.has(snippetKey(snip))) {
+        activeTerms.push(snip.original.trim());
       }
     }
     appState.pdfRedactionBoxes = activeBoxes;
@@ -136,11 +147,13 @@
   // searches the text itself: it places overlays over the values Go returned.
   // Each distinct value is searched on every page, so a value Go found once is
   // covered wherever else it appears in the document.
+  const snippetKey = (snip: DocxTextSnippet) => snip.original?.trim().split(/\s+/).join(' ') ?? '';
+
   function uniqueSnippets(snippets: DocxTextSnippet[] | undefined): DocxTextSnippet[] {
     const seen = new Set<string>();
     const result: DocxTextSnippet[] = [];
     for (const snip of snippets ?? []) {
-      const key = snip.original?.trim().split(/\s+/).join(' ');
+      const key = snippetKey(snip);
       if (!key || key.length < 2 || seen.has(key)) continue;
       seen.add(key);
       result.push(snip);
@@ -311,7 +324,8 @@
               original: b.matchedStr.replace(/[.,:;()\[\]"'\-–—]+$/, '') || snip.original,
               anonymized: BLACKOUT_MARKER,
               cssRect: b.cssRect,
-              pdfBox: b.pdfBox
+              pdfBox: b.pdfBox,
+              source: snippetKey(snip)
             });
           }
         }
