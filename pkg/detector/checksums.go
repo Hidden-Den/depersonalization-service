@@ -104,18 +104,33 @@ func ValidateCardNumber(card string) bool {
 	if len(digits) != 13 && len(digits) != 15 && len(digits) != 16 && len(digits) != 18 && len(digits) != 19 {
 		return false
 	}
-	hasValidPrefix := false
-	if strings.HasPrefix(digits, "4") || // Visa
-		strings.HasPrefix(digits, "22") || // Mir, MC
-		(len(digits) >= 2 && digits[:2] >= "51" && digits[:2] <= "55") || // Mastercard
-		(len(digits) >= 2 && (digits[:2] == "50" || digits[:2] == "56" || digits[:2] == "57" || digits[:2] == "58")) || // Maestro
-		strings.HasPrefix(digits, "62") || strings.HasPrefix(digits, "67") || strings.HasPrefix(digits, "60") || strings.HasPrefix(digits, "63") || // UnionPay / Maestro
-		strings.HasPrefix(digits, "34") || strings.HasPrefix(digits, "37") { // Amex
-		hasValidPrefix = true
-	}
-	if !hasValidPrefix {
+	if !HasCardPrefix(digits) {
 		return false
 	}
 	return ValidateCardLuhn(digits)
 }
 
+// HasCardPrefix reports whether digits start with a known payment-system prefix
+// (Mir, Visa, Mastercard, Maestro, UnionPay, Amex).
+func HasCardPrefix(digits string) bool {
+	return strings.HasPrefix(digits, "4") || // Visa
+		strings.HasPrefix(digits, "22") || // Mir, MC
+		(len(digits) >= 2 && digits[:2] >= "51" && digits[:2] <= "55") || // Mastercard
+		(len(digits) >= 2 && (digits[:2] == "50" || digits[:2] == "56" || digits[:2] == "57" || digits[:2] == "58")) || // Maestro
+		strings.HasPrefix(digits, "62") || strings.HasPrefix(digits, "67") || strings.HasPrefix(digits, "60") || strings.HasPrefix(digits, "63") || // UnionPay / Maestro
+		strings.HasPrefix(digits, "34") || strings.HasPrefix(digits, "37") // Amex
+}
+
+// ValidateINN10 checks the control digit of a 10-digit legal-entity INN.
+func ValidateINN10(inn string) bool {
+	digits := cleanDigits(inn)
+	if len(digits) != 10 {
+		return false
+	}
+	w := []int{2, 4, 10, 3, 5, 9, 4, 6, 8}
+	sum := 0
+	for i := 0; i < 9; i++ {
+		sum += int(digits[i]-'0') * w[i]
+	}
+	return int(digits[9]-'0') == (sum%11)%10
+}
