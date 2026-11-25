@@ -441,12 +441,13 @@ func (a *DesktopApp) GenerateArchivePassword() (string, error) {
 }
 
 // ValidateArchivePassword validates archive password against basic requirements (ASCII, >=4 chars, no spaces).
-func (a *DesktopApp) ValidateArchivePassword(password string) (bool, string) {
-	err := ziputil.ValidateArchivePassword(password)
-	if err != nil {
-		return false, err.Error()
+// It returns the validation error message, or an empty string when the password is acceptable.
+// A single return value is required: Wails v2 delivers only the first of two non-error results to JS.
+func (a *DesktopApp) ValidateArchivePassword(password string) string {
+	if err := ziputil.ValidateArchivePassword(password); err != nil {
+		return err.Error()
 	}
-	return true, ""
+	return ""
 }
 
 

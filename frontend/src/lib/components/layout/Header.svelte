@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '../ui/Icon.svelte';
   import { appState } from '../../stores/appState.svelte';
   import { zoomState } from '../../stores/zoomState.svelte';
 
@@ -57,9 +58,7 @@
       class="h-7 px-3 bg-white hover:bg-[#FAF9F5] text-[#1C1917] border border-[#E8E7E3] rounded-md text-xs font-medium shadow-2xs pressable flex items-center gap-1.5 cursor-pointer"
       title="Журнал операций"
     >
-      <svg class="w-3.5 h-3.5 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
+      <Icon name="clock" class="w-3.5 h-3.5 text-stone-500" />
       <span>Журнал</span>
     </button>
 
@@ -73,9 +72,7 @@
         class="h-full w-7 flex items-center justify-center hover:bg-[#F0EFEB] text-[#78716C] hover:text-[#1C1917] pressable cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         title="Уменьшить масштаб"
       >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-        </svg>
+        <Icon name="minus" class="w-3.5 h-3.5" />
       </button>
       <button
         id="btn-zoom-reset"
@@ -94,9 +91,7 @@
         class="h-full w-7 flex items-center justify-center hover:bg-[#F0EFEB] text-[#78716C] hover:text-[#1C1917] pressable cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         title="Увеличить масштаб"
       >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-        </svg>
+        <Icon name="plus" class="w-3.5 h-3.5" />
       </button>
     </div>
   </div>

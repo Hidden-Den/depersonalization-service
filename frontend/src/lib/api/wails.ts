@@ -1,3 +1,11 @@
+// Тонкий типизированный слой над привязками Wails v2.
+// Go-структура internal/desktop.DesktopApp привязана через Bind и доступна как
+// window.go.desktop.DesktopApp; рантайм Wails — как window.runtime.
+// Сгенерированные wailsjs/ не используются: приложение собирается обычным `go build`
+// без Wails CLI, поэтому сигнатуры ниже ведутся вручную и должны совпадать с Go.
+//
+// Моков нет намеренно: вне Wails любой вызов бэкенда отклоняется с явной ошибкой,
+// чтобы поломка привязки не выглядела как успешная операция.
 import type {
   AppInfo,
   AuditRecord,
@@ -5,765 +13,110 @@ import type {
   KeyFileInfo,
   PasswordValidationResult,
   PreviewRow,
+  ProcessOptions,
   ProcessResult,
   RestoreResult
 } from '../types/domain';
 
-type AnyFunction = (...args: any[]) => void;
-
-interface WailsAppBinding {
-  GetAppInfo?: () => Promise<AppInfo>;
-  InspectFile?: (path: string) => Promise<FileInfo>;
-  ValidateKeyPassword?: (password: string) => Promise<PasswordValidationResult>;
-  GetTableRows?: (path: string, offset: number, limit: number, salt: string, disabledCols: number[], mode?: string) => Promise<PreviewRow[]>;
-  GetSheetRows?: (path: string, sheetName: string, offset: number, limit: number, salt: string, disabledCols: number[], mode?: string) => Promise<PreviewRow[]>;
-  ProcessFile?: (path: string, salt: string, mode?: string) => Promise<ProcessResult>;
-  ProcessFileTo?: (
+interface DesktopApp {
+  GetAppInfo(): Promise<AppInfo>;
+  SelectFile(): Promise<string>;
+  InspectFile(path: string): Promise<FileInfo>;
+  GetFileBase64(path: string): Promise<string>;
+  GetSheetRows(
     path: string,
-    outPath: string,
+    sheetName: string,
+    offset: number,
+    limit: number,
     salt: string,
     disabledCols: number[],
-    createKey: boolean,
-    keyPassword: string,
-    keyPath: string,
-    shuffleRows?: boolean,
-    mode?: string
-  ) => Promise<ProcessResult>;
-  ProcessFileWithSheets?: (
-    path: string,
-    outPath: string,
-    salt: string,
-    disabledCols: number[],
-    disabledBySheet: Record<string, number[]>,
-    createKey: boolean,
-    keyPassword: string,
-    keyPath: string,
-    shuffleRows?: boolean,
-    mode?: string
-  ) => Promise<ProcessResult>;
-  GetAuditRecords?: (limit: number) => Promise<AuditRecord[]>;
-  ExportAuditLog?: (destPath: string) => Promise<void>;
-  SaveAuditFileDialog?: (defaultName: string) => Promise<string>;
-  CancelCurrentOperation?: () => Promise<void>;
-  SelectFile?: () => Promise<string>;
-  SaveFileDialog?: (defaultName: string) => Promise<string>;
-  SelectKeyFile?: () => Promise<string>;
-  SaveKeyFileDialog?: (defaultName: string) => Promise<string>;
-  InspectKeyFile?: (keyPath: string, password: string) => Promise<KeyFileInfo>;
-  RestoreFileTo?: (inputPath: string, keyPath: string, password: string, destPath: string) => Promise<RestoreResult>;
-  OpenContainingFolder?: (targetPath: string) => Promise<void>;
-  GetFileBase64?: (path: string) => Promise<string>;
-  ProcessFileWithOptions?: (options: any) => Promise<ProcessResult>;
-  SetClipboardText?: (text: string) => Promise<boolean>;
-  SaveArchiveFileDialog?: (defaultName: string) => Promise<string>;
-  GenerateArchivePassword?: () => Promise<string>;
-  ValidateArchivePassword?: (password: string) => Promise<[boolean, string]>;
+    mode: string
+  ): Promise<PreviewRow[]>;
+  ProcessFileWithOptions(options: ProcessOptions): Promise<ProcessResult>;
+  CancelCurrentOperation(): Promise<void>;
+  SaveFileDialog(defaultName: string): Promise<string>;
+  SelectKeyFile(): Promise<string>;
+  SaveKeyFileDialog(defaultName: string): Promise<string>;
+  SaveArchiveFileDialog(defaultName: string): Promise<string>;
+  SaveAuditFileDialog(defaultName: string): Promise<string>;
+  InspectKeyFile(keyPath: string, password: string): Promise<KeyFileInfo>;
+  RestoreFileTo(inputPath: string, keyPath: string, password: string, destPath: string): Promise<RestoreResult>;
+  OpenContainingFolder(targetPath: string): Promise<void>;
+  GetAuditRecords(limit: number): Promise<AuditRecord[]>;
+  ExportAuditLog(destPath: string): Promise<void>;
+  SetClipboardText(text: string): Promise<boolean>;
+  ValidateKeyPassword(password: string): Promise<PasswordValidationResult>;
+  GenerateArchivePassword(): Promise<string>;
+  /** Возвращает текст ошибки или пустую строку, если пароль подходит. */
+  ValidateArchivePassword(password: string): Promise<string>;
 }
 
-interface WailsRuntimeBinding {
-  EventsOn?: (eventName: string, callback: AnyFunction) => void;
-  EventsOff?: (eventName: string, ...additional: any[]) => void;
-  EventsEmit?: (eventName: string, ...args: any[]) => void;
-  OnFileDrop?: (callback: (x: number, y: number, paths: string[]) => void, printStack?: boolean) => void;
-  OnFileDropOff?: () => void;
-  ClipboardSetText?: (text: string) => Promise<boolean>;
+interface WailsRuntime {
+  EventsOn(eventName: string, callback: (...data: any[]) => void): () => void;
+  OnFileDrop(callback: (x: number, y: number, paths: string[]) => void, useDropTarget: boolean): void;
+  OnFileDropOff(): void;
 }
 
 declare global {
   interface Window {
-    go?: {
-      desktop?: {
-        DesktopApp?: WailsAppBinding;
-      };
-      main?: {
-        App?: WailsAppBinding;
-      };
-    };
-    runtime?: WailsRuntimeBinding;
+    go?: { desktop?: { DesktopApp?: DesktopApp } };
+    runtime?: WailsRuntime;
   }
 }
 
-function getApp(): WailsAppBinding | undefined {
-  if (typeof window === 'undefined') return undefined;
-  const w = window as any;
-  if (w.go?.desktop?.DesktopApp) return w.go.desktop.DesktopApp;
-  if (w.go?.desktop?.desktopApp) return w.go.desktop.desktopApp;
-  if (w.go?.main?.App) return w.go.main.App;
-  if (w.go?.main?.app) return w.go.main.app;
-
-  // Fallback: search for any bound object with InspectFile or SelectFile
-  if (w.go && typeof w.go === 'object') {
-    for (const pkg of Object.values(w.go) as any[]) {
-      if (pkg && typeof pkg === 'object') {
-        for (const target of Object.values(pkg) as any[]) {
-          if (target && (typeof target.SelectFile === 'function' || typeof target.InspectFile === 'function')) {
-            return target as WailsAppBinding;
-          }
-        }
-      }
-    }
+function backend(): DesktopApp {
+  const app = window.go?.desktop?.DesktopApp;
+  if (!app) {
+    throw new Error('Бэкенд приложения недоступен: интерфейс запущен вне Wails');
   }
-  return undefined;
+  return app;
 }
 
-function getRuntime(): WailsRuntimeBinding | undefined {
-  if (typeof window === 'undefined') return undefined;
-  return window.runtime;
+// Обёртка через async превращает отсутствие бэкенда в отклонённый Promise,
+// который вызывающий код обрабатывает так же, как ошибку из Go.
+function bind<K extends keyof DesktopApp>(method: K): DesktopApp[K] {
+  return (async (...args: unknown[]) =>
+    (backend()[method] as (...a: unknown[]) => unknown)(...args)) as DesktopApp[K];
 }
 
-// In-memory pub/sub fallback for dev mode when window.runtime is not available
-const devEventListeners = new Map<string, Set<AnyFunction>>();
+export const GetAppInfo = bind('GetAppInfo');
+export const SelectFile = bind('SelectFile');
+export const InspectFile = bind('InspectFile');
+export const GetFileBase64 = bind('GetFileBase64');
+export const GetSheetRows = bind('GetSheetRows');
+export const ProcessFileWithOptions = bind('ProcessFileWithOptions');
+export const CancelCurrentOperation = bind('CancelCurrentOperation');
+export const SaveFileDialog = bind('SaveFileDialog');
+export const SelectKeyFile = bind('SelectKeyFile');
+export const SaveKeyFileDialog = bind('SaveKeyFileDialog');
+export const SaveArchiveFileDialog = bind('SaveArchiveFileDialog');
+export const SaveAuditFileDialog = bind('SaveAuditFileDialog');
+export const InspectKeyFile = bind('InspectKeyFile');
+export const RestoreFileTo = bind('RestoreFileTo');
+export const OpenContainingFolder = bind('OpenContainingFolder');
+export const GetAuditRecords = bind('GetAuditRecords');
+export const ExportAuditLog = bind('ExportAuditLog');
+export const SetClipboardText = bind('SetClipboardText');
+export const ValidateKeyPassword = bind('ValidateKeyPassword');
+export const GenerateArchivePassword = bind('GenerateArchivePassword');
+export const ValidateArchivePassword = bind('ValidateArchivePassword');
 
-export async function GetAppInfo(): Promise<AppInfo> {
-  const app = getApp();
-  if (app?.GetAppInfo) {
-    return await app.GetAppInfo();
+/** Подписка на событие бэкенда. Возвращает функцию отписки. */
+export function EventsOn(eventName: string, callback: (...data: any[]) => void): () => void {
+  if (!window.runtime) {
+    console.warn(`[wails] рантайм недоступен, подписка на «${eventName}» не выполнена`);
+    return () => {};
   }
-  return {
-    version: 'v1.0-dev',
-    os: 'Browser (Dev)',
-    arch: 'wasm'
-  };
+  return window.runtime.EventsOn(eventName, callback);
 }
 
-export async function InspectFile(path: string): Promise<FileInfo> {
-  const app = getApp();
-  if (app?.InspectFile) {
-    return await app.InspectFile(path);
+/** Нативный drag-and-drop файлов с полными путями ОС. Возвращает функцию отписки. */
+export function OnFileDrop(callback: (x: number, y: number, paths: string[]) => void): () => void {
+  const runtime = window.runtime;
+  if (!runtime) {
+    console.warn('[wails] рантайм недоступен, перетаскивание файлов отключено');
+    return () => {};
   }
-  const fileName = path.split('/').pop() || path.split('\\').pop() || 'sample.csv';
-  return {
-    path,
-    name: fileName,
-    extension: '.csv',
-    fileType: 'table',
-    format: 'csv',
-    size: 1024,
-    rowCount: 2,
-    pageCount: 1,
-    headers: ['ФИО', 'СНИЛС', 'Телефон'],
-    entities: [
-      { columnIndex: 1, columnName: 'ФИО', type: 'fio', description: 'ФИО', action: 'anonymize' },
-      { columnIndex: 2, columnName: 'СНИЛС', type: 'snils', description: 'СНИЛС', action: 'anonymize' },
-      { columnIndex: 3, columnName: 'Телефон', type: 'phone', description: 'Телефон', action: 'anonymize' }
-    ],
-    previewRows: [
-      {
-        index: 1,
-        before: ['Иванов Иван Иванович', '112-233-445 95', '+7 (916) 123-45-67'],
-        after: ['Смирнов Алексей Петрович', '443-112-998 12', '+7 (916) 999-88-77']
-      },
-      {
-        index: 2,
-        before: ['Петров Петр Петрович', '223-344-556 06', '+7 (903) 765-43-21'],
-        after: ['Кузнецов Сергей Дмитриевич', '554-223-119 23', '+7 (903) 111-22-33']
-      }
-    ]
-  };
+  runtime.OnFileDrop(callback, false);
+  return () => runtime.OnFileDropOff();
 }
-
-export async function GetTableRows(
-  path: string,
-  offset: number,
-  limit: number,
-  salt: string,
-  disabledCols: number[],
-  mode?: string
-): Promise<PreviewRow[]> {
-  const app = getApp();
-  if (app?.GetTableRows) {
-    return await app.GetTableRows(path, offset, limit, salt, disabledCols, mode || '');
-  }
-  if (app?.GetSheetRows) {
-    return await app.GetSheetRows(path, '', offset, limit, salt, disabledCols, mode || '');
-  }
-  return [];
-}
-
-export async function GetSheetRows(
-  path: string,
-  sheetName: string,
-  offset: number,
-  limit: number,
-  salt: string,
-  disabledCols: number[],
-  mode?: string
-): Promise<PreviewRow[]> {
-  const app = getApp();
-  if (app?.GetSheetRows) {
-    return await app.GetSheetRows(path, sheetName, offset, limit, salt, disabledCols, mode || '');
-  }
-  if (app?.GetTableRows) {
-    return await app.GetTableRows(path, offset, limit, salt, disabledCols, mode || '');
-  }
-  return [];
-}
-
-export async function ProcessFile(path: string, salt: string, mode?: string): Promise<ProcessResult> {
-  const app = getApp();
-  const effectiveMode = mode || 'tokens';
-  if (app?.ProcessFile) {
-    try {
-      return await (app.ProcessFile as any)(path, salt, effectiveMode);
-    } catch (e: any) {
-      if (String(e).includes('cannot unmarshal string into Go value of type []string')) {
-        return await (app.ProcessFile as any)(path, salt, [effectiveMode]);
-      }
-      throw e;
-    }
-  }
-  return {
-    success: true,
-    inputPath: path,
-    outputPath: `${path}.anonymized`,
-    rowsCount: 2,
-    entitiesCount: 6,
-    durationMs: 45,
-    message: 'Файл успешно обезличен (Dev Mode)'
-  };
-}
-
-export async function ProcessFileTo(
-  path: string,
-  outPath: string,
-  salt: string,
-  disabledCols: number[],
-  createKey: boolean,
-  keyPassword: string,
-  keyPath: string,
-  shuffleRows: boolean = false,
-  mode?: string
-): Promise<ProcessResult> {
-  const app = getApp();
-  const effectiveMode = mode || 'tokens';
-  if (app?.ProcessFileTo) {
-    try {
-      return await (app.ProcessFileTo as any)(
-        path,
-        outPath,
-        salt,
-        disabledCols,
-        createKey,
-        keyPassword,
-        keyPath,
-        Boolean(shuffleRows),
-        effectiveMode
-      );
-    } catch (e: any) {
-      if (String(e).includes('cannot unmarshal string into Go value of type []string')) {
-        return await (app.ProcessFileTo as any)(
-          path,
-          outPath,
-          salt,
-          disabledCols,
-          createKey,
-          keyPassword,
-          keyPath,
-          Boolean(shuffleRows),
-          [effectiveMode]
-        );
-      }
-      throw e;
-    }
-  }
-  const defaultKeyPath = keyPath || `${outPath || path}.depmap`;
-  return {
-    success: true,
-    inputPath: path,
-    outputPath: outPath || `${path}.anonymized`,
-    keyPath: createKey ? defaultKeyPath : undefined,
-    rowsCount: 2,
-    entitiesCount: 6,
-    durationMs: 50,
-    message: 'Файл успешно обезличен (Dev Mode)'
-  };
-}
-
-export async function ProcessFileWithSheets(
-  path: string,
-  outPath: string,
-  salt: string,
-  disabledCols: number[],
-  disabledBySheet: Record<string, number[]>,
-  createKey: boolean,
-  keyPassword: string,
-  keyPath: string,
-  shuffleRows: boolean = false,
-  mode?: string
-): Promise<ProcessResult> {
-  const app = getApp();
-  const effectiveMode = mode || 'tokens';
-  if (app?.ProcessFileWithSheets) {
-    try {
-      return await (app.ProcessFileWithSheets as any)(
-        path,
-        outPath,
-        salt,
-        disabledCols,
-        disabledBySheet,
-        createKey,
-        keyPassword,
-        keyPath,
-        Boolean(shuffleRows),
-        effectiveMode
-      );
-    } catch (e: any) {
-      if (String(e).includes('cannot unmarshal string into Go value of type []string')) {
-        return await (app.ProcessFileWithSheets as any)(
-          path,
-          outPath,
-          salt,
-          disabledCols,
-          disabledBySheet,
-          createKey,
-          keyPassword,
-          keyPath,
-          Boolean(shuffleRows),
-          [effectiveMode]
-        );
-      }
-      throw e;
-    }
-  }
-  if (app?.ProcessFileTo) {
-    try {
-      return await (app.ProcessFileTo as any)(
-        path,
-        outPath,
-        salt,
-        disabledCols,
-        createKey,
-        keyPassword,
-        keyPath,
-        Boolean(shuffleRows),
-        effectiveMode
-      );
-    } catch (e: any) {
-      if (String(e).includes('cannot unmarshal string into Go value of type []string')) {
-        return await (app.ProcessFileTo as any)(
-          path,
-          outPath,
-          salt,
-          disabledCols,
-          createKey,
-          keyPassword,
-          keyPath,
-          Boolean(shuffleRows),
-          [effectiveMode]
-        );
-      }
-      throw e;
-    }
-  }
-  const defaultKeyPath = keyPath || `${outPath || path}.depmap`;
-  return {
-    success: true,
-    inputPath: path,
-    outputPath: outPath || `${path}.anonymized`,
-    keyPath: createKey ? defaultKeyPath : undefined,
-    rowsCount: 2,
-    entitiesCount: 6,
-    durationMs: 55,
-    message: 'Файл успешно обезличен (Dev Mode)',
-    effectivePassword: createKey && !keyPassword ? 'auto-key-xyz123' : keyPassword || undefined,
-    keyPasswordGenerated: createKey && !keyPassword
-  };
-}
-
-export async function CancelCurrentOperation(): Promise<void> {
-  const app = getApp();
-  if (app?.CancelCurrentOperation) {
-    await app.CancelCurrentOperation();
-  }
-}
-
-export async function SelectFile(): Promise<string> {
-  const app = getApp();
-  if (app?.SelectFile) {
-    return await app.SelectFile();
-  }
-  // Browser fallback when running outside desktop webview
-  return new Promise<string>((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.xlsx,.xlsb,.ods,.xls,.csv,.tsv,.docx,.odt,.pdf';
-    input.style.display = 'none';
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) {
-        const path = (file as any).path || file.name;
-        resolve(path);
-      } else {
-        resolve('');
-      }
-      if (input.parentNode) {
-        input.parentNode.removeChild(input);
-      }
-    };
-    input.oncancel = () => {
-      resolve('');
-      if (input.parentNode) {
-        input.parentNode.removeChild(input);
-      }
-    };
-    document.body.appendChild(input);
-    input.click();
-  });
-}
-
-export async function SaveFileDialog(defaultName: string): Promise<string> {
-  const app = getApp();
-  if (app?.SaveFileDialog) {
-    return await app.SaveFileDialog(defaultName);
-  }
-  return `/dev/mock/${defaultName}`;
-}
-
-export async function SelectKeyFile(): Promise<string> {
-  const app = getApp();
-  if (app?.SelectKeyFile) {
-    return await app.SelectKeyFile();
-  }
-  return new Promise<string>((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.depmap';
-    input.style.display = 'none';
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) {
-        const path = (file as any).path || file.name;
-        resolve(path);
-      } else {
-        resolve('');
-      }
-      if (input.parentNode) {
-        input.parentNode.removeChild(input);
-      }
-    };
-    input.oncancel = () => {
-      resolve('');
-      if (input.parentNode) {
-        input.parentNode.removeChild(input);
-      }
-    };
-    document.body.appendChild(input);
-    input.click();
-  });
-}
-
-export async function SaveKeyFileDialog(defaultName: string): Promise<string> {
-  const app = getApp();
-  if (app?.SaveKeyFileDialog) {
-    return await app.SaveKeyFileDialog(defaultName);
-  }
-  return `/dev/mock/${defaultName}`;
-}
-
-export async function InspectKeyFile(keyPath: string, password: string): Promise<KeyFileInfo> {
-  const app = getApp();
-  if (app?.InspectKeyFile) {
-    return await app.InspectKeyFile(keyPath, password);
-  }
-  return {
-    path: keyPath,
-    originalFileName: 'clients.csv',
-    createdAt: new Date().toISOString(),
-    recordsCount: 4,
-    valid: true
-  };
-}
-
-export async function RestoreFileTo(
-  inputPath: string,
-  keyPath: string,
-  password: string,
-  destPath: string
-): Promise<RestoreResult> {
-  const app = getApp();
-  if (app?.RestoreFileTo) {
-    return await app.RestoreFileTo(inputPath, keyPath, password, destPath);
-  }
-  return {
-    success: true,
-    inputPath,
-    keyPath,
-    outputPath: destPath,
-    restoredCells: 6,
-    durationMs: 40
-  };
-}
-
-export async function OpenContainingFolder(targetPath: string): Promise<void> {
-  const app = getApp();
-  if (app?.OpenContainingFolder) {
-    await app.OpenContainingFolder(targetPath);
-  } else {
-    console.info('[Wails Dev] OpenContainingFolder:', targetPath);
-  }
-}
-
-export async function GetAuditRecords(limit: number = 50): Promise<AuditRecord[]> {
-  const app = getApp();
-  if (app?.GetAuditRecords) {
-    return await app.GetAuditRecords(limit);
-  }
-  return [
-    {
-      timestamp: new Date().toISOString(),
-      username: 'operator',
-      hostname: 'dev-workstation',
-      operation: 'depersonalize',
-      source_file: 'clients_sample.xlsx',
-      source_hash: 'a1b2c3d4e5f6',
-      result_file: 'clients_sample_anonymized.xlsx',
-      result_hash: 'f6e5d4c3b2a1',
-      records_count: 1420,
-      entities: ['fio', 'phone', 'snils'],
-      key_created: true,
-      status: 'success'
-    }
-  ];
-}
-
-export async function ExportAuditLog(destPath: string): Promise<boolean> {
-  const app = getApp();
-  if (app?.ExportAuditLog) {
-    await app.ExportAuditLog(destPath);
-    return true;
-  }
-  return true;
-}
-
-export async function SaveAuditFileDialog(defaultName: string = ''): Promise<string> {
-  const app = getApp();
-  if (app?.SaveAuditFileDialog) {
-    return await app.SaveAuditFileDialog(defaultName);
-  }
-  return `/dev/mock/${defaultName || 'audit.jsonl'}`;
-}
-
-export async function ValidateKeyPassword(password: string): Promise<PasswordValidationResult> {
-  const app = getApp();
-  if (app?.ValidateKeyPassword) {
-    return await app.ValidateKeyPassword(password);
-  }
-  // Client-side fallback if Wails is not available (e.g. dev mode)
-  const trimmed = password.trim();
-  if (!trimmed) {
-    return {
-      valid: true,
-      score: 0,
-      errors: [],
-      minLength: false,
-      hasUppercase: false,
-      hasLowercase: false,
-      hasDigit: false,
-      hasSpecial: false,
-      onlyLatin: false,
-    };
-  }
-  const minLength = Array.from(password).length >= 12;
-  const hasUppercase = /[A-Z]/.test(password);
-  const hasLowercase = /[a-z]/.test(password);
-  const hasDigit = /[0-9]/.test(password);
-  const hasSpecial = /[!@#$%^&*()_+\-=[\]{}|;:,.<>?/\\~`'"]/.test(password);
-  const onlyLatin = !/[^A-Za-z0-9!@#$%^&*()_+\-=[\]{}|;:,.<>?/\\~`'"]/.test(password);
-
-  const errors: string[] = [];
-  if (!onlyLatin) errors.push('пароль должен содержать только латинские буквы (A-Z, a-z), цифры и спецсимволы');
-  if (!minLength) errors.push('пароль должен содержать не менее 12 символов');
-  if (!hasUppercase) errors.push('пароль должен содержать хотя бы одну заглавную латинскую букву (A-Z)');
-  if (!hasLowercase) errors.push('пароль должен содержать хотя бы одну строчную латинскую букву (a-z)');
-  if (!hasDigit) errors.push('пароль должен содержать хотя бы одну цифру (0-9)');
-  if (!hasSpecial) errors.push('пароль должен содержать хотя бы один специальный символ');
-
-  let criteriaCount = 0;
-  if (hasUppercase) criteriaCount++;
-  if (hasLowercase) criteriaCount++;
-  if (hasDigit) criteriaCount++;
-  if (hasSpecial) criteriaCount++;
-
-  let score = 1;
-  if (!onlyLatin) {
-    score = 1;
-  } else if (minLength && criteriaCount === 4) {
-    score = 4;
-  } else if (minLength && criteriaCount >= 3) {
-    score = 3;
-  } else if (criteriaCount >= 3 || (minLength && criteriaCount >= 2)) {
-    score = 2;
-  }
-
-  return {
-    valid: errors.length === 0,
-    score,
-    errors,
-    minLength,
-    hasUppercase,
-    hasLowercase,
-    hasDigit,
-    hasSpecial,
-    onlyLatin,
-  };
-}
-
-export function EventsOn(eventName: string, callback: AnyFunction): () => void {
-  const runtime = getRuntime();
-  if (runtime?.EventsOn) {
-    runtime.EventsOn(eventName, callback);
-    return () => EventsOff(eventName, callback);
-  }
-
-  // Fallback in-memory event listener
-  if (!devEventListeners.has(eventName)) {
-    devEventListeners.set(eventName, new Set());
-  }
-  devEventListeners.get(eventName)!.add(callback);
-
-  return () => {
-    EventsOff(eventName, callback);
-  };
-}
-
-export function EventsOff(eventName: string, callback?: AnyFunction): void {
-  const runtime = getRuntime();
-  if (runtime?.EventsOff) {
-    if (callback) {
-      runtime.EventsOff(eventName, callback);
-    } else {
-      runtime.EventsOff(eventName);
-    }
-    return;
-  }
-
-  // Fallback in-memory event unregister
-  const set = devEventListeners.get(eventName);
-  if (!set) return;
-  if (callback) {
-    set.delete(callback);
-    if (set.size === 0) {
-      devEventListeners.delete(eventName);
-    }
-  } else {
-    devEventListeners.delete(eventName);
-  }
-}
-
-// Dev helper to trigger mock events in development or unit tests
-export function DevEmitEvent(eventName: string, ...args: any[]): void {
-  const runtime = getRuntime();
-  if (runtime?.EventsEmit) {
-    runtime.EventsEmit(eventName, ...args);
-    return;
-  }
-  const set = devEventListeners.get(eventName);
-  if (set) {
-    for (const cb of set) {
-      try {
-        cb(...args);
-      } catch (err) {
-        console.error(`Error in event handler for ${eventName}:`, err);
-      }
-    }
-  }
-}
-
-export function OnFileDrop(
-  callback: (x: number, y: number, paths: string[]) => void
-): () => void {
-  const runtime = getRuntime();
-  if (runtime?.OnFileDrop) {
-    runtime.OnFileDrop(callback, false);
-    return () => {
-      if (runtime.OnFileDropOff) {
-        runtime.OnFileDropOff();
-      }
-    };
-  }
-  return () => {};
-}
-
-export async function GetFileBase64(path: string): Promise<string> {
-  const app = getApp();
-  if (app?.GetFileBase64) {
-    return await app.GetFileBase64(path);
-  }
-  return '';
-}
-
-export async function ProcessFileWithOptions(options: any): Promise<ProcessResult> {
-  const app = getApp();
-  if (app?.ProcessFileWithOptions) {
-    return await app.ProcessFileWithOptions(options);
-  }
-  throw new Error('ProcessFileWithOptions not available in current environment');
-}
-
-export async function SetClipboardText(text: string): Promise<boolean> {
-  const app = getApp();
-  if (app?.SetClipboardText) {
-    try {
-      return await app.SetClipboardText(text);
-    } catch (e) {
-      console.warn('Backend SetClipboardText error:', e);
-    }
-  }
-  const runtime = getRuntime();
-  if (runtime?.ClipboardSetText) {
-    try {
-      return await runtime.ClipboardSetText(text);
-    } catch (e) {
-      console.warn('Runtime ClipboardSetText error:', e);
-    }
-  }
-  return false;
-}
-
-export async function SaveArchiveFileDialog(defaultName: string): Promise<string> {
-  const app = getApp();
-  if (app?.SaveArchiveFileDialog) {
-    return await app.SaveArchiveFileDialog(defaultName);
-  }
-  return defaultName;
-}
-
-export async function GenerateArchivePassword(): Promise<string> {
-  const app = getApp();
-  if (app?.GenerateArchivePassword) {
-    return await app.GenerateArchivePassword();
-  }
-  const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  let ret = '';
-  for (let i = 0; i < 16; i++) {
-    ret += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return ret;
-}
-
-export async function ValidateArchivePassword(password: string): Promise<{ valid: boolean; error: string }> {
-  const app = getApp();
-  if (app?.ValidateArchivePassword) {
-    const res = await app.ValidateArchivePassword(password);
-    if (Array.isArray(res)) {
-      return { valid: res[0], error: res[1] || '' };
-    }
-  }
-  const trimmed = password.trim();
-  if (trimmed.length < 4) {
-    return { valid: false, error: 'Пароль архива должен содержать не менее 4 символов' };
-  }
-  if (password.length !== trimmed.length) {
-    return { valid: false, error: 'Пароль архива не должен содержать пробелов' };
-  }
-  for (let i = 0; i < password.length; i++) {
-    const code = password.charCodeAt(i);
-    if (code < 33 || code > 126) {
-      return { valid: false, error: 'Пароль архива может содержать только латиницу, цифры и спецсимволы без пробелов' };
-    }
-  }
-  return { valid: true, error: '' };
-}
-
-
-

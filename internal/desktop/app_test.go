@@ -762,19 +762,14 @@ func TestDesktopApp_ArchiveMethods(t *testing.T) {
 		t.Errorf("expected 16 chars password, got %d", len(pwd))
 	}
 
-	// 2. ValidateArchivePassword
-	valid, errMsg := app.ValidateArchivePassword(pwd)
-	if !valid || errMsg != "" {
-		t.Errorf("expected generated password to be valid, got valid=%v, err=%s", valid, errMsg)
+	// 2. ValidateArchivePassword: empty message means the password is acceptable
+	if errMsg := app.ValidateArchivePassword(pwd); errMsg != "" {
+		t.Errorf("expected generated password to be valid, got %q", errMsg)
 	}
-
-	validShort, errMsgShort := app.ValidateArchivePassword("12")
-	if validShort || errMsgShort == "" {
+	if app.ValidateArchivePassword("12") == "" {
 		t.Errorf("expected short password to be invalid")
 	}
-
-	validCyr, errMsgCyr := app.ValidateArchivePassword("Пароль123")
-	if validCyr || errMsgCyr == "" {
+	if app.ValidateArchivePassword("Пароль123") == "" {
 		t.Errorf("expected cyrillic password to be invalid")
 	}
 
@@ -785,7 +780,19 @@ func TestDesktopApp_ArchiveMethods(t *testing.T) {
 	}
 }
 
-
-
-
-
+// Wails v2 delivers only the first result to JS when a bound method returns two values
+// and the second is not an error, so such signatures silently lose data in the frontend.
+func TestDesktopApp_BoundMethodsReturnShape(t *testing.T) {
+	errorType := reflect.TypeOf((*error)(nil)).Elem()
+	appType := reflect.TypeOf(&desktop.DesktopApp{})
+	for i := 0; i < appType.NumMethod(); i++ {
+		m := appType.Method(i)
+		switch out := m.Type.NumOut(); {
+		case out > 2:
+			t.Errorf("%s returns %d values; Wails supports at most (value, error)", m.Name, out)
+		case out == 2 && !m.Type.Out(1).Implements(errorType):
+			t.Errorf("%s returns (%v, %v); the second value must be error or it never reaches JS",
+				m.Name, m.Type.Out(0), m.Type.Out(1))
+		}
+	}
+}

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { appState } from '../../stores/appState.svelte';
   import { tableState } from '../../stores/tableState.svelte';
+  import BeforeAfterToggle from '../ui/BeforeAfterToggle.svelte';
+  import Icon from '../ui/Icon.svelte';
   import type {
     DocxTextSnippet,
     TextDocumentBlock,
@@ -242,26 +244,7 @@
 
       <!-- Controls Right: Before/After Toggle -->
       <div class="flex items-center gap-2.5">
-        <div class="h-7 inline-flex items-center border border-[#E8E7E3] bg-[#F0EFEB] rounded-md p-0.5 text-xs font-medium">
-          <button
-            type="button"
-            onclick={() => (isBefore = false)}
-            class="h-full px-3 rounded pressable flex items-center {!isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Очищенные данные
-          </button>
-          <button
-            type="button"
-            onclick={() => (isBefore = true)}
-            class="h-full px-3 rounded pressable flex items-center {isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Исходные с ПДн
-          </button>
-        </div>
+        <BeforeAfterToggle bind:before={isBefore} />
       </div>
     </div>
 
@@ -477,9 +460,7 @@
             </div>
 
             <div class="mt-2.5 pt-2 border-t border-stone-800 text-[10px] text-stone-400 font-mono flex items-center gap-1.5">
-              <svg class="w-3 h-3 text-stone-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
+              <Icon name="info" class="w-3 h-3 text-stone-400 shrink-0" />
               <span>Кликните для {hoveredEntity.isDisabled ? 'включения' : 'отключения'} замены</span>
             </div>
           </div>

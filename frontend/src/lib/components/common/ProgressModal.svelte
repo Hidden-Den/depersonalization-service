@@ -1,6 +1,8 @@
 <script lang="ts">
   import { appState } from '../../stores/appState.svelte';
   import { CancelCurrentOperation } from '../../api/wails';
+  import Modal from '../ui/Modal.svelte';
+  import ModalHeader from '../ui/ModalHeader.svelte';
 
   let isCanceling = $state(false);
 
@@ -59,23 +61,18 @@
 </script>
 
 {#if appState.showProgressModal}
-  <div
-    id="progress-modal"
-    class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 transition-opacity"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="progress-modal-title"
-  >
-    <div class="bg-white border border-[#E8E7E3] rounded-lg shadow-2xl max-w-md w-full p-6 flex flex-col gap-4 animate-surface-enter">
-      <div class="flex items-center justify-between border-b border-[#F0EFEB] pb-3">
-        <div class="flex items-center space-x-2">
+  <!-- Без onClose: окно прогресса закрывается только по завершении или отмене операции. -->
+  <Modal id="progress-modal" labelledby="progress-modal-title" class="max-w-md p-6 gap-4">
+      <ModalHeader titleId="progress-modal-title" title={modalTitle}>
+        {#snippet leading()}
           <span id="progress-indicator" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <h2 id="progress-modal-title" class="text-sm font-bold text-[#1C1917]">{modalTitle}</h2>
-        </div>
-        <span id="progress-pct-badge" class="font-mono text-xs font-bold text-[#1C1917] bg-[#F0EFEB] px-2 py-0.5 rounded border border-[#E8E7E3]">
-          {appState.progress.percent}%
-        </span>
-      </div>
+        {/snippet}
+        {#snippet actions()}
+          <span id="progress-pct-badge" class="font-mono text-xs font-bold text-[#1C1917] bg-[#F0EFEB] px-2 py-0.5 rounded border border-[#E8E7E3]">
+            {appState.progress.percent}%
+          </span>
+        {/snippet}
+      </ModalHeader>
 
       <div class="space-y-2">
         <div class="w-full bg-[#F0EFEB] h-2.5 rounded-full overflow-hidden p-0.5 border border-[#E8E7E3]">
@@ -102,6 +99,5 @@
           {isCanceling ? 'Отмена...' : 'Отмена'}
         </button>
       </div>
-    </div>
-  </div>
+  </Modal>
 {/if}
