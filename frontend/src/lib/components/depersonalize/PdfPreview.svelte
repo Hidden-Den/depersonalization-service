@@ -3,6 +3,7 @@
   import { loadPdf, type PDFDocumentProxy } from '../../utils/pdfWorker';
   import { GetFileBase64 } from '../../api/wails';
   import { cleanWord, findTokenRuns } from '../../utils/pdfTextMatch';
+  import BeforeAfterToggle from '../ui/BeforeAfterToggle.svelte';
   import type { DocxTextSnippet, PDFRedactionBox } from '../../types/domain';
 
   const MAX_PREVIEW_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -378,26 +379,7 @@
 
       <!-- Controls Right: Before/After Toggle -->
       <div class="flex items-center gap-2.5">
-        <div class="h-7 inline-flex items-center border border-[#E8E7E3] bg-[#F0EFEB] rounded-md p-0.5 text-xs font-medium">
-          <button
-            type="button"
-            onclick={() => (isBefore = false)}
-            class="h-full px-3 rounded pressable flex items-center {!isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Очищенные данные
-          </button>
-          <button
-            type="button"
-            onclick={() => (isBefore = true)}
-            class="h-full px-3 rounded pressable flex items-center {isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Исходные с ПДн
-          </button>
-        </div>
+        <BeforeAfterToggle bind:before={isBefore} />
       </div>
     </div>
 
