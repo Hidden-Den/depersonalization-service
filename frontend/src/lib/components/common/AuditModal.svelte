@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { appState } from '../../stores/appState.svelte';
   import { GetAuditRecords, ExportAuditLog, SaveAuditFileDialog } from '../../api/wails';
   import type { AuditRecord } from '../../types/domain';
+  import { splitPath } from '../../utils/path';
+  import Modal from '../ui/Modal.svelte';
+  import ModalHeader from '../ui/ModalHeader.svelte';
+  import Icon from '../ui/Icon.svelte';
 
   let records = $state<AuditRecord[]>([]);
   let isLoading = $state(false);
@@ -60,77 +63,35 @@
     }
   }
 
-  function getFileName(path: string): string {
-    if (!path) return '—';
-    return path.split('/').pop()?.split('\\').pop() || path;
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && appState.showAuditModal) {
-      appState.closeAuditModal();
-    }
-  }
-
-  onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
-    return () => {
-      window.removeEventListener('keydown', handleKeydown);
-    };
-  });
+  const getFileName = (path: string) => (path ? splitPath(path).filename : '—');
 </script>
 
 {#if appState.showAuditModal}
-  <div
+  <Modal
     id="audit-modal"
-    class="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 overscroll-contain transition-opacity"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="audit-modal-title"
-    tabindex="-1"
-    onclick={(e) => {
-      if (e.target === e.currentTarget) appState.closeAuditModal();
-    }}
-    onkeydown={(e) => {
-      if (e.key === 'Escape') appState.closeAuditModal();
-    }}
+    labelledby="audit-modal-title"
+    onClose={() => appState.closeAuditModal()}
+    class="max-w-4xl p-6 gap-4 max-h-[calc(100%-2rem)]"
   >
-    <div
-      class="bg-white border border-[#E8E7E3] rounded-lg shadow-2xl max-w-4xl w-full p-6 flex flex-col gap-4 max-h-[calc(100%-2rem)] animate-surface-enter"
-    >
-      <!-- Modal Header -->
-      <div class="flex items-center justify-between border-b border-[#F0EFEB] pb-3">
-        <div class="flex items-center space-x-2.5">
-          <h2 id="audit-modal-title" class="text-sm font-semibold text-[#1C1917]">
-            Журнал операций
-          </h2>
+      <ModalHeader titleId="audit-modal-title" title="Журнал операций" onClose={() => appState.closeAuditModal()}>
+        {#snippet badge()}
           <span class="text-[11px] font-mono text-[#78716C] bg-[#FAF9F5] px-2 py-0.5 rounded border border-[#E8E7E3]">
             {records.length}
           </span>
-        </div>
-        <div class="flex items-center space-x-1.5">
+        {/snippet}
+        {#snippet actions()}
           <button
             type="button"
             onclick={loadRecords}
             disabled={isLoading}
             class="h-7 w-7 flex items-center justify-center text-[#78716C] hover:text-[#1C1917] border border-[#E8E7E3] hover:border-[#1C1917] bg-[#FAF9F5] rounded transition cursor-pointer disabled:opacity-50 pressable"
             title="Обновить"
+            aria-label="Обновить"
           >
-            <svg class="w-3.5 h-3.5 {isLoading ? 'animate-spin' : ''} shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
+            <Icon name="refresh" class="w-3.5 h-3.5 shrink-0 {isLoading ? 'animate-spin' : ''}" />
           </button>
-          <button
-            type="button"
-            onclick={() => appState.closeAuditModal()}
-            class="h-7 w-7 flex items-center justify-center text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded transition pressable cursor-pointer"
-            title="Закрыть"
-          >
-            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      </div>
+        {/snippet}
+      </ModalHeader>
 
       <!-- Table Content Area -->
       <div class="flex-1 overflow-y-auto border border-[#E8E7E3] bg-white rounded-md custom-scrollbar min-h-[220px]">
@@ -221,6 +182,5 @@
           Закрыть
         </button>
       </div>
-    </div>
-  </div>
+  </Modal>
 {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '../ui/Icon.svelte';
   import { appState } from '../../stores/appState.svelte';
   import { selectAndLoadFile, loadFile, clearCurrentFile } from '../../services/fileLoader';
 
@@ -112,9 +113,7 @@
       if (e.key === 'Enter' || e.key === ' ') handleSelectFile();
     }}
   >
-    <svg class="w-8 h-8 text-stone-400 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-    </svg>
+    <Icon name="upload" class="w-8 h-8 text-stone-400 mb-1" strokeWidth={1.5} />
     <div class="font-semibold text-sm text-[#1C1917]">
       {isDraggingOver ? 'Отпустите файл' : 'Выберите или перетащите файл'}
     </div>
@@ -145,9 +144,7 @@
     <!-- Left: File Icon Badge + File Name + Extension Pill -->
     <div class="flex items-center space-x-3 min-w-0 flex-1">
       <div class="w-7 h-7 bg-emerald-50 rounded-md border border-emerald-200/80 flex items-center justify-center text-emerald-700 shrink-0 select-none">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
+        <Icon name="document" class="w-4 h-4" strokeWidth={1.8} />
       </div>
       <div class="flex items-center space-x-2 min-w-0">
         <h2

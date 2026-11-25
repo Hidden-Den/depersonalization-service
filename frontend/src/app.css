@@ -109,10 +109,6 @@ body {
   background-color: #1C1917;
 }
 
-body.modal-open {
-  overflow: hidden !important;
-  height: 100vh !important;
-}
 
 @keyframes loading-progress {
   0% {

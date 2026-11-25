@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { appState } from '../../stores/appState.svelte';
   import { tableState } from '../../stores/tableState.svelte';
   import { zoomState } from '../../stores/zoomState.svelte';
   import { GetSheetRows } from '../../api/wails';
-  import type { EntityInfo, ProcessingMode } from '../../types/domain';
+  import type { EntityInfo, PreviewRow } from '../../types/domain';
+  import Modal from '../ui/Modal.svelte';
+  import Icon from '../ui/Icon.svelte';
+  import BeforeAfterToggle from '../ui/BeforeAfterToggle.svelte';
 
   let loadAttemptCompleted = $state(false);
 
@@ -272,58 +275,115 @@
       loadMoreRows();
     }
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && tableState.isFullscreen) {
-      tableState.setIsFullscreen(false);
-    }
-  }
-
-  onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
-    return () => {
-      window.removeEventListener('keydown', handleKeydown);
-    };
-  });
 </script>
 
+{#snippet previewTable(rows: PreviewRow[], tableId: string, headerZ: string)}
+  <table
+    id={tableId}
+    class="resizable-table w-full text-left text-xs border-collapse"
+    style={totalTableWidth > 0 ? `width: ${totalTableWidth}px; min-width: 100%;` : 'width: 100%;'}
+  >
+    <thead class="sticky top-0 {headerZ} bg-white shadow-[0_1px_0_0_#E8E7E3]">
+      <tr class="bg-white text-[#78716C] font-mono text-[11px] whitespace-nowrap">
+        <th
+          style="width: {tableState.columnWidths[0] || 50}px;"
+          class="py-3 px-3 font-normal text-center text-[#A8A29E] bg-[#FAF9F5] border-r border-[#F0EFEB] select-none"
+        >
+          #
+        </th>
+        {#each headers as h, idx}
+          {@const col1Based = idx + 1}
+          {@const isPii = entities.some((e) => e.columnIndex === col1Based)}
+          {@const isDisabled = disabledCols.includes(col1Based)}
+          {@const title = h && h.trim() ? h : `Колонка ${col1Based}`}
+          <th
+            style="width: {tableState.columnWidths[col1Based] || 180}px;"
+            class="py-3 px-3 font-semibold text-[#1C1917] select-none border-r border-[#F0EFEB] bg-white"
+          >
+            <div class="flex items-center justify-between gap-1.5 w-full min-w-0 overflow-hidden pr-2">
+              <span
+                class="truncate min-w-0 flex-1 whitespace-nowrap {isDisabled ? 'line-through text-stone-400' : ''} {!h || !h.trim() ? 'text-stone-400 italic font-normal' : ''}"
+                {title}
+              >
+                {title}
+              </span>
+              {#if isPii}
+                <button
+                  type="button"
+                  onclick={() => tableState.toggleColumn(sheetName, col1Based)}
+                  title={isDisabled ? 'Включить деперсонализацию' : 'Исключить колонку'}
+                  aria-pressed={!isDisabled}
+                  class="shrink-0 cursor-pointer text-[10px] px-1.5 py-0.5 rounded font-mono border {isDisabled
+                    ? 'text-stone-500 bg-stone-100 border-stone-200 line-through'
+                    : 'text-emerald-700 bg-emerald-50 border-emerald-200 font-medium'}"
+                >
+                  ПДн
+                </button>
+              {/if}
+            </div>
+            <div
+              class="col-resizer"
+              onmousedown={(e) => initResize(e, col1Based)}
+              role="button"
+              tabindex="-1"
+              aria-label="Изменить ширину колонки"
+            ></div>
+          </th>
+        {/each}
+      </tr>
+    </thead>
+
+    <tbody class="divide-y divide-[#F0EFEB] text-[13px]">
+      {#if rows.length === 0}
+        <tr>
+          <td colspan={headers.length + 1} class="py-8 text-center text-xs text-[#78716C] font-mono">
+            В таблице нет строк данных для отображения
+          </td>
+        </tr>
+      {/if}
+      {#each rows as row, i}
+        <tr class="hover:bg-[#FAF9F5] transition-colors whitespace-nowrap">
+          <td class="py-3 px-3 font-mono text-center text-[#A8A29E] text-xs bg-[#FAF9F5] border-r border-[#F0EFEB] select-none">
+            {String(row.index || i + 1).padStart(2, '0')}
+          </td>
+          {#each headers as _, cIdx}
+            {@const col1Based = cIdx + 1}
+            {@const isPii = entities.some((e) => e.columnIndex === col1Based)}
+            {@const isDisabled = disabledCols.includes(col1Based)}
+            {@const origVal = row.before?.[cIdx] ?? ''}
+            {@const anonVal = row.after?.[cIdx] ?? origVal}
+            {@const isDelete = appState.processingMode === 'delete'}
+            {@const value = tableState.isBefore || isDisabled ? origVal : isPii && isDelete ? '[УДАЛЕНО]' : anonVal}
+            {@const tone = tableState.isBefore
+              ? isPii
+                ? isDisabled
+                  ? 'text-[#78716C] bg-stone-50/50'
+                  : 'font-medium text-rose-700 bg-rose-50/50'
+                : 'text-[#57534E]'
+              : isDisabled
+                ? 'text-[#78716C] bg-stone-50/70 italic'
+                : isPii
+                  ? isDelete
+                    ? 'font-medium text-rose-700 bg-rose-50/40'
+                    : 'font-medium text-[#1C1917] bg-emerald-50/40'
+                  : 'text-[#57534E]'}
+            <td class="py-3 px-4 text-xs font-mono border-r border-[#F0EFEB] truncate {tone}" title={value}>
+              {value}
+            </td>
+          {/each}
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+{/snippet}
+
 {#if appState.currentFileInfo && appState.currentFileInfo.fileType === 'table'}
-  <!-- Main Data Inspection Box -->
   <div id="table-inspection-box" class="bg-white border border-[#E8E7E3] rounded-lg shadow-2xs hover-sheen flex flex-col overflow-hidden">
-    <!-- Table Header Toolbar -->
-    <div
-      class="px-5 py-2.5 border-b border-[#E8E7E3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#FAF9F5]"
-    >
-      <div class="flex items-center space-x-2">
-        <span class="text-xs font-semibold text-[#1C1917]">
-          Предпросмотр
-        </span>
-      </div>
+    <div class="px-5 py-2.5 border-b border-[#E8E7E3] flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#FAF9F5]">
+      <span class="text-xs font-semibold text-[#1C1917]">Предпросмотр</span>
 
       <div class="flex items-center gap-2.5">
-        <!-- Toggle: Before vs After -->
-        <div class="h-7 inline-flex items-center border border-[#E8E7E3] bg-[#F0EFEB] rounded-md p-0.5 text-xs font-medium">
-          <button
-            type="button"
-            onclick={() => tableState.setIsBefore(false)}
-            class="h-full px-3 rounded pressable flex items-center {!tableState.isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Очищенные данные
-          </button>
-          <button
-            type="button"
-            onclick={() => tableState.setIsBefore(true)}
-            class="h-full px-3 rounded pressable flex items-center {tableState.isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Исходные с ПДн
-          </button>
-        </div>
-
-        <!-- Expand Button with clean SVG -->
+        <BeforeAfterToggle bind:before={() => tableState.isBefore, (v) => tableState.setIsBefore(v)} />
         <button
           id="btn-expand-preview"
           type="button"
@@ -331,169 +391,26 @@
           class="h-7 px-3 bg-white hover:bg-[#F5F5F4] border border-[#E8E7E3] hover:border-[#1C1917] text-[#1C1917] text-xs font-semibold rounded-md flex items-center gap-1.5 transition cursor-pointer shadow-xs pressable"
           title="Раскрыть окно предпросмотра таблицы"
         >
-          <svg class="w-3.5 h-3.5 text-stone-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-          </svg>
+          <Icon name="expand" class="w-3.5 h-3.5 text-stone-600 shrink-0" />
           <span>Раскрыть</span>
         </button>
       </div>
     </div>
 
-    <!-- Table Scroll Container (10 rows preview) -->
     <div id="table-scroll-container" class="overflow-x-auto max-h-[460px] overflow-y-auto custom-scrollbar">
-      <table
-        id="preview-table"
-        class="resizable-table w-full text-left text-xs border-collapse"
-        style={totalTableWidth > 0 ? `width: ${totalTableWidth}px; min-width: 100%;` : 'width: 100%;'}
-      >
-        <thead class="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#E8E7E3]">
-          <tr id="table-header-row" class="bg-white text-[#78716C] font-mono text-[11px] whitespace-nowrap">
-            <th
-              style="width: {tableState.columnWidths[0] || 50}px;"
-              class="py-3 px-3 font-normal text-center text-[#A8A29E] bg-[#FAF9F5] border-r border-[#F0EFEB] select-none"
-            >
-              #
-            </th>
-            {#each headers as h, idx}
-              {@const col1Based = idx + 1}
-              {@const ent = entities.find((e) => e.columnIndex === col1Based)}
-              {@const isPii = !!ent}
-              {@const isDisabled = disabledCols.includes(col1Based)}
-              {@const colW = tableState.columnWidths[col1Based] || 180}
-              <th
-                style="width: {colW}px;"
-                class="py-3 px-3 font-semibold text-[#1C1917] select-none border-r border-[#F0EFEB]"
-              >
-                <div class="flex items-center justify-between gap-1.5 w-full min-w-0 overflow-hidden pr-2">
-                  <span
-                    class="truncate min-w-0 flex-1 whitespace-nowrap {isDisabled ? 'line-through text-stone-400' : ''} {!h || !h.trim() ? 'text-stone-400 italic font-normal' : ''}"
-                    title={h && h.trim() ? h : `Колонка ${col1Based}`}
-                  >
-                    {h && h.trim() ? h : `Колонка ${col1Based}`}
-                  </span>
-
-                  {#if isPii}
-                    <button
-                      type="button"
-                      onclick={() => tableState.toggleColumn(sheetName, col1Based)}
-                      title={isDisabled ? 'Включить деперсонализацию' : 'Исключить колонку'}
-                      class="shrink-0 cursor-pointer"
-                    >
-                      {#if isDisabled}
-                        <span
-                          class="text-[10px] text-stone-500 bg-stone-100 border border-stone-200 px-1 py-0.5 rounded font-mono line-through"
-                        >
-                          ПДн
-                        </span>
-                      {:else}
-                        <span
-                          class="text-[10px] text-emerald-700 bg-emerald-50 border-emerald-200 border px-1.5 py-0.5 rounded font-mono font-medium"
-                        >
-                          ПДн
-                        </span>
-                      {/if}
-                    </button>
-                  {/if}
-                </div>
-                <div
-                  class="col-resizer"
-                  onmousedown={(e) => initResize(e, col1Based)}
-                  role="button"
-                  tabindex="-1"
-                  aria-label="Изменить ширину колонки"
-                ></div>
-              </th>
-            {/each}
-          </tr>
-        </thead>
-
-        <tbody id="table-rows" class="divide-y divide-[#F0EFEB] text-[13px]">
-          {#if mainRows.length === 0}
-            <tr>
-              <td colspan={headers.length + 1} class="py-8 text-center text-xs text-[#78716C] font-mono">
-                В таблице нет строк данных для отображения
-              </td>
-            </tr>
-          {:else}
-            {#each mainRows as row, i}
-              <tr class="hover:bg-[#FAF9F5] transition-colors whitespace-nowrap">
-                <td
-                  class="py-3 px-3 font-mono text-center text-[#A8A29E] text-xs bg-[#FAF9F5] border-r border-[#F0EFEB] select-none"
-                >
-                  {String(row.index || i + 1).padStart(2, '0')}
-                </td>
-                {#each headers as _, cIdx}
-                  {@const col1Based = cIdx + 1}
-                  {@const ent = entities.find((e) => e.columnIndex === col1Based)}
-                  {@const isPii = !!ent}
-                  {@const isDisabled = disabledCols.includes(col1Based)}
-                  {@const origVal = row.before?.[cIdx] ?? ''}
-                  {@const anonVal = row.after?.[cIdx] ?? origVal}
-                  {@const displayVal = isDisabled
-                    ? origVal
-                    : isPii && appState.processingMode === 'delete'
-                      ? '[УДАЛЕНО]'
-                      : anonVal}
-
-                  {#if tableState.isBefore}
-                    <!-- Before view -->
-                    <td
-                      class="py-3 px-4 text-xs font-mono border-r border-[#F0EFEB] truncate {isPii
-                        ? isDisabled
-                          ? 'text-[#78716C] bg-stone-50/50'
-                          : 'font-medium text-rose-700 bg-rose-50/50'
-                        : 'text-[#57534E]'}"
-                      title={origVal}
-                    >
-                      {origVal}
-                    </td>
-                  {:else}
-                    <!-- After view (Cleaned) -->
-                    <td
-                      class="py-3 px-4 text-xs font-mono border-r border-[#F0EFEB] truncate {isDisabled
-                        ? 'text-[#78716C] bg-stone-50/70 italic'
-                        : isPii
-                          ? appState.processingMode === 'delete'
-                            ? 'font-medium text-rose-700 bg-rose-50/40'
-                            : 'font-medium text-[#1C1917] bg-emerald-50/40'
-                          : 'text-[#57534E]'}"
-                      title={displayVal}
-                    >
-                      {displayVal}
-                    </td>
-                  {/if}
-                {/each}
-              </tr>
-            {/each}
-          {/if}
-        </tbody>
-      </table>
+      {@render previewTable(mainRows, 'preview-table', 'z-10')}
     </div>
   </div>
 
-  <!-- EXPANDED FULLSCREEN MODAL -->
   {#if tableState.isFullscreen}
-    <div
+    <Modal
       id="expanded-preview-modal"
-      class="fixed inset-0 bg-stone-900/60 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 z-50 overflow-hidden overscroll-contain"
-      onclick={(e) => {
-        if (e.target === e.currentTarget) tableState.setIsFullscreen(false);
-      }}
-      onkeydown={(e) => {
-        if (e.key === 'Escape') tableState.setIsFullscreen(false);
-      }}
-      role="dialog"
-      aria-modal="true"
-      tabindex="-1"
-      aria-label="Полный предпросмотр таблицы"
+      label="Полный предпросмотр таблицы"
+      onClose={() => tableState.setIsFullscreen(false)}
+      overlayClass="bg-stone-900/60 p-2 sm:p-4"
+      class="h-full max-h-full max-w-full overflow-hidden overscroll-contain"
     >
-      <div
-        class="bg-white border border-[#E8E7E3] rounded-lg shadow-2xl w-full h-full max-h-full max-w-full flex flex-col overflow-hidden overscroll-contain animate-surface-enter"
-      >
-        <!-- Modal Header -->
-        <div
-          class="px-4 py-2.5 sm:px-5 sm:py-3 border-b border-[#E8E7E3] flex flex-wrap items-center justify-between bg-[#FAF9F5] shrink-0 gap-2 sm:gap-3"
-        >
+        <div class="px-4 py-2.5 sm:px-5 sm:py-3 border-b border-[#E8E7E3] flex flex-wrap items-center justify-between bg-[#FAF9F5] shrink-0 gap-2 sm:gap-3">
           <div class="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0 flex-1">
             <span class="font-bold text-xs sm:text-sm tracking-tight text-[#1C1917] whitespace-nowrap">
               Полный предпросмотр таблицы
@@ -510,7 +427,6 @@
           </div>
 
           <div class="flex items-center space-x-2 sm:space-x-3 shrink-0 ml-auto">
-            <!-- Modal Zoom Controls -->
             <div class="h-7 flex items-center bg-white text-xs font-medium border border-[#E8E7E3] rounded-md overflow-hidden shadow-2xs" id="modal-zoom-controls">
               <button
                 type="button"
@@ -518,10 +434,9 @@
                 disabled={zoomState.currentZoom <= zoomState.minZoom}
                 class="h-full w-7 flex items-center justify-center hover:bg-[#FAF9F5] text-[#78716C] hover:text-[#1C1917] pressable cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Уменьшить масштаб"
+                aria-label="Уменьшить масштаб"
               >
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4" />
-                </svg>
+                <Icon name="minus" class="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
@@ -537,199 +452,44 @@
                 disabled={zoomState.currentZoom >= zoomState.maxZoom}
                 class="h-full w-7 flex items-center justify-center hover:bg-[#FAF9F5] text-[#78716C] hover:text-[#1C1917] pressable cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Увеличить масштаб"
+                aria-label="Увеличить масштаб"
               >
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                </svg>
+                <Icon name="plus" class="w-3.5 h-3.5" />
               </button>
             </div>
 
-            <!-- Toggle Before vs After inside Modal -->
-            <div class="h-7 inline-flex items-center border border-[#E8E7E3] bg-[#F0EFEB] rounded-md p-0.5 text-xs font-medium">
-              <button
-                type="button"
-                onclick={() => tableState.setIsBefore(false)}
-                class="h-full px-2.5 sm:px-3 rounded pressable flex items-center {!tableState.isBefore
-                  ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-                  : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer text-xs"
-              >
-                Очищенные данные
-              </button>
-              <button
-                type="button"
-                onclick={() => tableState.setIsBefore(true)}
-                class="h-full px-2.5 sm:px-3 rounded pressable flex items-center {tableState.isBefore
-                  ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-                  : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer text-xs"
-              >
-                Исходные с ПДн
-              </button>
-            </div>
+            <BeforeAfterToggle bind:before={() => tableState.isBefore, (v) => tableState.setIsBefore(v)} />
 
-            <!-- Close Modal Button -->
             <button
               type="button"
               onclick={() => tableState.setIsFullscreen(false)}
               class="h-7 px-3 bg-[#1C1917] hover:bg-[#292524] text-white text-xs font-semibold rounded-md shadow-xs pressable flex items-center gap-1.5 cursor-pointer shrink-0"
             >
-              <svg class="w-3.5 h-3.5 shrink-0 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <Icon name="close" class="w-3.5 h-3.5 shrink-0 text-stone-400" />
               <span>Свернуть</span>
               <kbd class="text-[10px] text-[#A8A29E] font-mono ml-0.5 bg-[#292524] px-1 py-0.5 rounded border border-stone-700">Esc</kbd>
             </button>
           </div>
         </div>
 
-        <!-- Resizable Table in Modal with Dynamic Infinite Scroll -->
         <div
           id="modal-table-scroll-container"
           class="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto custom-scrollbar overscroll-contain"
           onscroll={handleModalScroll}
         >
-          <table
-            id="modal-preview-table"
-            class="resizable-table w-full text-left text-xs border-collapse"
-            style={totalTableWidth > 0 ? `width: ${totalTableWidth}px; min-width: 100%;` : 'width: 100%;'}
-          >
-            <thead class="sticky top-0 z-20 bg-white shadow-[0_1px_0_0_#E8E7E3]">
-              <tr class="bg-white text-[#78716C] font-mono text-[11px] whitespace-nowrap">
-                <th
-                  style="width: {tableState.columnWidths[0] || 50}px;"
-                  class="py-3 px-3 font-normal text-center text-[#A8A29E] bg-[#FAF9F5] border-r border-[#F0EFEB] select-none sticky top-0"
-                >
-                  #
-                </th>
-                {#each headers as h, idx}
-                  {@const col1Based = idx + 1}
-                  {@const ent = entities.find((e) => e.columnIndex === col1Based)}
-                  {@const isPii = !!ent}
-                  {@const isDisabled = disabledCols.includes(col1Based)}
-                  {@const colW = tableState.columnWidths[col1Based] || 180}
-                  <th
-                    style="width: {colW}px;"
-                    class="py-3 px-3 font-semibold text-[#1C1917] select-none border-r border-[#F0EFEB] bg-white sticky top-0"
-                  >
-                    <div class="flex items-center justify-between gap-1.5 w-full min-w-0 overflow-hidden pr-2">
-                      <span
-                        class="truncate min-w-0 flex-1 whitespace-nowrap {isDisabled ? 'line-through text-stone-400' : ''} {!h || !h.trim() ? 'text-stone-400 italic font-normal' : ''}"
-                        title={h && h.trim() ? h : `Колонка ${col1Based}`}
-                      >
-                        {h && h.trim() ? h : `Колонка ${col1Based}`}
-                      </span>
-                      {#if isPii}
-                        <button
-                          type="button"
-                          onclick={() => tableState.toggleColumn(sheetName, col1Based)}
-                          title={isDisabled ? 'Включить деперсонализацию' : 'Исключить колонку'}
-                          class="shrink-0 cursor-pointer"
-                        >
-                          {#if isDisabled}
-                            <span
-                              class="text-[10px] text-stone-500 bg-stone-100 border border-stone-200 px-1 py-0.5 rounded font-mono line-through"
-                            >
-                              ПДн
-                            </span>
-                          {:else}
-                            <span
-                              class="text-[10px] text-emerald-700 bg-emerald-50 border-emerald-200 border px-1.5 py-0.5 rounded font-mono font-medium"
-                            >
-                              ПДн
-                            </span>
-                          {/if}
-                        </button>
-                      {/if}
-                    </div>
-                    <div
-                      class="col-resizer"
-                      onmousedown={(e) => initResize(e, col1Based)}
-                      role="button"
-                      tabindex="-1"
-                      aria-label="Изменить ширину колонки"
-                    ></div>
-                  </th>
-                {/each}
-              </tr>
-            </thead>
+          {@render previewTable(tableState.previewRows, 'modal-preview-table', 'z-20')}
 
-            <tbody class="divide-y divide-[#F0EFEB] text-[13px]">
-              {#if tableState.previewRows.length === 0}
-                <tr>
-                  <td colspan={headers.length + 1} class="py-8 text-center text-xs text-[#78716C] font-mono">
-                    В таблице нет строк данных для отображения
-                  </td>
-                </tr>
-              {:else}
-                {#each tableState.previewRows as row, i}
-                  <tr class="hover:bg-[#FAF9F5] transition-colors whitespace-nowrap">
-                    <td
-                      class="py-3 px-3 font-mono text-center text-[#A8A29E] text-xs bg-[#FAF9F5] border-r border-[#F0EFEB] select-none"
-                    >
-                      {String(row.index || i + 1).padStart(2, '0')}
-                    </td>
-                    {#each headers as _, cIdx}
-                      {@const col1Based = cIdx + 1}
-                      {@const ent = entities.find((e) => e.columnIndex === col1Based)}
-                      {@const isPii = !!ent}
-                      {@const isDisabled = disabledCols.includes(col1Based)}
-                      {@const origVal = row.before?.[cIdx] ?? ''}
-                      {@const anonVal = row.after?.[cIdx] ?? origVal}
-                      {@const displayVal = isDisabled
-                        ? origVal
-                        : isPii && appState.processingMode === 'delete'
-                          ? '[УДАЛЕНО]'
-                          : anonVal}
-
-                      {#if tableState.isBefore}
-                        <td
-                          class="py-3 px-4 text-xs font-mono border-r border-[#F0EFEB] truncate {isPii
-                            ? isDisabled
-                              ? 'text-[#78716C] bg-stone-50/50'
-                              : 'font-medium text-rose-700 bg-rose-50/50'
-                            : 'text-[#57534E]'}"
-                          title={origVal}
-                        >
-                          {origVal}
-                        </td>
-                      {:else}
-                        <td
-                          class="py-3 px-4 text-xs font-mono border-r border-[#F0EFEB] truncate {isDisabled
-                            ? 'text-[#78716C] bg-stone-50/70 italic'
-                            : isPii
-                              ? appState.processingMode === 'delete'
-                                ? 'font-medium text-rose-700 bg-rose-50/40'
-                                : 'font-medium text-[#1C1917] bg-emerald-50/40'
-                              : 'text-[#57534E]'}"
-                          title={displayVal}
-                        >
-                          {displayVal}
-                        </td>
-                      {/if}
-                    {/each}
-                  </tr>
-                {/each}
-              {/if}
-
-              {#if tableState.isLoadingRows}
-                <tr>
-                  <td
-                    colspan={headers.length + 1}
-                    class="py-3 text-center text-xs text-[#78716C] font-mono bg-[#FAF9F5]"
-                  >
-                    <span class="inline-flex items-center justify-center mr-2 align-middle">
-                      <svg class="w-3.5 h-3.5 animate-spin text-stone-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-                      </svg>
-                    </span>
-                    <span>Подгрузка следующих строк...</span>
-                  </td>
-                </tr>
-              {/if}
-            </tbody>
-          </table>
-
-          {#if tableState.previewRows.length < totalRowCount && !loadAttemptCompleted}
+          {#if tableState.isLoadingRows}
+            <div class="py-3 text-center text-xs text-[#78716C] font-mono bg-[#FAF9F5] border-t border-[#F0EFEB]">
+              <span class="inline-flex items-center justify-center mr-2 align-middle">
+                <svg class="w-3.5 h-3.5 animate-spin text-stone-500 shrink-0" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                </svg>
+              </span>
+              <span>Подгрузка следующих строк...</span>
+            </div>
+          {:else if tableState.previewRows.length < totalRowCount && !loadAttemptCompleted}
             <div class="p-3 text-center border-t border-[#F0EFEB] bg-[#FAF9F5]">
               <button
                 type="button"
@@ -737,19 +497,15 @@
                   loadAttemptCompleted = false;
                   loadMoreRows();
                 }}
-                disabled={tableState.isLoadingRows}
-                class="px-4 py-1.5 bg-white border border-[#E8E7E3] hover:border-[#1C1917] text-xs font-semibold text-[#1C1917] shadow-xs active:scale-[0.99] transition cursor-pointer disabled:opacity-50"
+                class="px-4 py-1.5 bg-white border border-[#E8E7E3] hover:border-[#1C1917] text-xs font-semibold text-[#1C1917] shadow-xs active:scale-[0.99] transition cursor-pointer"
               >
-                {tableState.isLoadingRows ? 'Загрузка...' : 'Загрузить еще 50 строк'}
+                Загрузить еще 50 строк
               </button>
             </div>
           {/if}
         </div>
 
-        <!-- Modal Footer -->
-        <div
-          class="px-5 py-2.5 bg-[#FAF9F5] border-t border-[#E8E7E3] text-xs text-[#78716C] flex items-center justify-between font-mono shrink-0"
-        >
+        <div class="px-5 py-2.5 bg-[#FAF9F5] border-t border-[#E8E7E3] text-xs text-[#78716C] flex items-center justify-between font-mono shrink-0">
           <span id="modal-columns-summary">
             {sheetName ? `Лист: ${sheetName} ▪ ` : ''}Колонок: {headers.length} ▪ ПДн: {entities.length}
           </span>
@@ -757,7 +513,6 @@
             Листайте вниз для динамической подгрузки строк файла
           </span>
         </div>
-      </div>
-    </div>
+    </Modal>
   {/if}
 {/if}
