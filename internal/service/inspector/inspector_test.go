@@ -1207,24 +1207,41 @@ func TestInspect_RealUserXLSXFiles(t *testing.T) {
 		t.Fatalf("Inspect f2 failed: %v", err)
 	}
 
-	type colKey struct {
-		typ string
-		col int
-	}
-	expected := map[colKey]bool{
-		{typ: "FIO", col: 1}:   true,
-		{typ: "EMAIL", col: 2}: true,
-		{typ: "DATE", col: 3}:  true,
+	// Match by column name, as for f1, not by index: the real export has no "ID"
+	// column and names the columns differently from the synthetic fallback.
+	expected := []struct {
+		typ   string
+		names []string // real export, synthetic fallback
+	}{
+		{typ: "FIO", names: []string{"ФИО", "Участник"}},
+		{typ: "EMAIL", names: []string{"E-mail", "Email"}},
+		{typ: "DATE", names: []string{"Дата прохождения", "Дата завершения"}},
 	}
 
 	if len(info2.Entities) != len(expected) {
 		t.Fatalf("expected exactly %d entities in f2, got %d: %v", len(expected), len(info2.Entities), info2.Entities)
 	}
 
+	found := make([]bool, len(expected))
 	for _, e := range info2.Entities {
-		k := colKey{typ: e.Type, col: e.ColumnIndex}
-		if !expected[k] {
+		matched := false
+		for i, want := range expected {
+			if e.Type != want.typ {
+				continue
+			}
+			for _, name := range want.names {
+				if strings.Contains(e.ColumnName, name) {
+					found[i], matched = true, true
+				}
+			}
+		}
+		if !matched {
 			t.Errorf("unexpected entity in f2: (Type: %s, ColumnIndex: %d, Name: %s)", e.Type, e.ColumnIndex, e.ColumnName)
+		}
+	}
+	for i, want := range expected {
+		if !found[i] {
+			t.Errorf("expected one of %q to be detected as %s in f2, entities: %v", want.names, want.typ, info2.Entities)
 		}
 	}
 }
