@@ -3,6 +3,7 @@ package detector
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -26,29 +27,41 @@ var (
 	RePassport4_6       = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{4}[\s\-]+(?:№|N|no\.)?\s*\d{6})`)
 	RePassport2_2_6     = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{2}\s+\d{2}\s*(?:№|N|no\.)?\s*\d{6})`)
 	RePassportPrefixed  = regexp.MustCompile(`(?i)(?:паспорт(?:а| гражданина рф)?(?:\s*(?:серия|номер|№|N|серии|номеру|серия\s+и\s+номер))*|серия\s+и\s+номер\s+паспорта)[:\s]*([0-9\s№Nno\.\-]{9,24})`)
+	// "серия 4014 номер 382910": the word between series and number breaks the digit-only rules.
+	RePassportSeriesNumber = regexp.MustCompile(`(?i)(?:серия|серии)[:\s]*(\d{2}\s?\d{2}[\s,]*(?:номер|номера|№|N)[:\s№]*\d{6})`)
 	RePassportDeptCode  = regexp.MustCompile(`(?i)(?:код\s+подразделения|код\s+подр\.?|код\s+подр)[:\s№]*(\d{3}[\s\-]\d{3})`)
 
 	ReINN12             = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{12})`)
 	ReINNPrefixed       = regexp.MustCompile(`(?i)(?:ИНН|INN)[:\s№]*\b(\d{10,12})\b`)
+	ReINN10             = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{10})`)
 
-	RePhone             = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])((?:\+7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2})`)
+	// +7 with any grouping; 7 or 8 grouped 3-3-2-2 or 3-7; or strictly dotted 8.916.123.45.67.
+	// Without "+" the separators stay narrow: the PDF handler also scans raw content
+	// streams, where sequences like "8 595.276 842.0 re" are drawing operands.
+	RePhone             = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\+\s*7[\s\-.]*\(?\s*\d{3}\s*\)?(?:[\s\-.]*\d){7}|[78][\s\-\(]*\d{3}[\s\-\)]*(?:\d{3}[\s\-]*\d{2}[\s\-]*\d{2}|\d{7})|[78]\.\d{3}\.\d{3}\.\d{2}\.\d{2})`)
 	RePhonePrefixed     = regexp.MustCompile(`(?i)(?:тел(?:ефон)?|моб\.?|сот\.?|доп\.?\s*тел\.?)[:\s]*((?:\+7|8)?[0-9\s\-\(\)]{10,18})`)
 
 	ReCard16            = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])((?:\d{4}[\s\-]?){4})`)
+	ReCardGrouped       = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{4}(?:[ \-]\d{4}){3})`)
 	ReBankAccount       = regexp.MustCompile(`(?i)(?:р/с|р/сч|расчетный\s+счет|расчётный\s+счёт|номер\s+счета|лицевой\s+счет|л/с|к/с|к/сч|корр(?:еспондентский)?\.?\s+счет|счет|счёт)[:\s№]*([0-9]{20})`)
 	ReAccountStandalone = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])((?:40[5-8]|30[1-2]|42[3-6])\d{17})`)
 
 	ReEmail             = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})`)
 
-	ReFIOPatronymic     = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:овича|евича|ича|овны|евны|ичны|овичу|евичу|ичу|овне|евне|ичне|овичем|евичем|ичем|овной|евной|ичной|овиче|евиче|иче|ович|евич|ич|овна|евна|ична|оглы|кызы|уулу|инична))`)
+	ReFIOPatronymic     = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:овича|евича|ича|овны|евны|ичны|овичу|евичу|ичу|овне|евне|ичне|овичем|евичем|ичем|овной|евной|ичной|овиче|евиче|иче|ович|евич|ич|овна|евна|ична|овну|евну|ичну|овною|евною|ичною|оглы|кызы|уулу|инична))`)
 	ReFIOPrefixed       = regexp.MustCompile(`(?i:(?:сотрудник(?:а|у|ом|е)?|клиент(?:а|у|ом|е)?|пациент(?:а|у|ом|е)?|фио|работник(?:а|у|ом|е)?|физлиц(?:о|а|у|ом|е)|подписал|сдал|принял|ип|арендодател(?:ь|я|ю|ем|е)|арендатор(?:а|у|ом|е)?|(?:гражданин(?:а|у|ом|е)?|гражданк(?:а|и|е|у|ой))(?:\s+(?:российской\s+федерации|рф))?|предпринимател(?:ь|я|ю|ем|е)|директор(?:а|у|ом|е)?|гендиректор(?:а|у|ом|е)?|руководител(?:ь|я|ю|ем|е)|представител(?:ь|я|ю|ем|е))[:\s]+)([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){1,2})`)
 	ReFIOInitials1      = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.|\s+[А-ЯЁ]\.))`)
 	ReFIOInitials2      = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])((?:[А-ЯЁ]\.\s*[А-ЯЁ]\.|\s*[А-ЯЁ]\.)\s+[А-ЯЁ][а-яё]+)`)
 
 	ReDateDMY           = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{2}\.\d{2}\.\d{4})`)
 	ReDateYMD           = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{4}-\d{2}-\d{2})`)
+	ReDateSlash         = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{2}/\d{2}/\d{4})`)
+	ReDateMonthName     = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}_])(\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4})`)
 
-	ReAddressPrefixed   = regexp.MustCompile(`(?i:(?:зарегистрирован(?:ный|ная|о|ы)?(?:\s+по\s+адресу)?|проживающ(?:ий|ая|ее|ие)?(?:\s+по\s+адресу)?|адрес\s+(?:регистрации|проживания|прописки|местонахождения|объекта|помещения|рег\.?|прож\.?)|фактический\s+адрес|юридический\s+адрес|место\s+(?:жительства|нахождения|регистрации)|по\s+адресу|адрес)[:\s]+)([^\n\r\t;]{12,180})`)
+	ReAddressPrefixed   = regexp.MustCompile(`(?i:(?:зарегистрирован(?:ный|ная|о|ы)?(?:\s+по\s+месту\s+(?:жительства|пребывания|регистрации))?(?:\s+по\s+адресу)?|проживающ(?:ий|ая|ее|ие)?(?:\s+по\s+адресу)?|по\s+месту\s+(?:жительства|пребывания|регистрации)(?:\s+по\s+адресу)?|адрес\s+(?:регистрации|проживания|прописки|местонахождения|объекта|помещения|рег\.?|прож\.?)|фактический\s+адрес|юридический\s+адрес|место\s+(?:жительства|нахождения|регистрации)|по\s+адресу|адрес)[:\s]+)([^\n\r\t;]{12,180})`)
+	// Address without a leading "адрес" word: a city or street followed by
+	// comma-separated street, house, building or flat parts.
+	ReAddressStreet     = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])((?i:г\.|гор\.|город|ул\.|улица|пр-т|пр-кт|проспект|пер\.|переулок|ш\.|шоссе|наб\.|б-р|бульвар)\s*[^,;\n]{2,40}(?:,\s*(?:(?i:ул\.|улица|пр-т|пр-кт|проспект|пер\.|переулок|ш\.|шоссе|наб\.|набережная|б-р|бульвар|мкр\.|пл\.|площадь)\s*[^,;\n]{2,40}|(?i:д\.|дом|корп\.|корпус|стр\.|строение|кв\.|квартира|оф\.|офис|пом\.|помещение)\s*\d+\p{L}?(?:/\d+\p{L}?)?|(?i:лит\.|литера)\s*\p{Lu}))+)`)
 	ReAddressPostal     = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_])(\d{6},\s*(?:г\.|гор\.|город|обл\.|область|край|респ\.|республика)[^\n\r\t;]{10,180})`)
 )
 
@@ -85,16 +98,124 @@ func TrimAddress(s string) string {
 		}
 	}
 
-	sentenceBreakRe := regexp.MustCompile(`\.\s+([А-ЯЁ][а-яё]+)`)
-	if loc := sentenceBreakRe.FindStringSubmatchIndex(s); len(loc) >= 4 {
+	s = cutAtNonAddressPart(s)
+
+	// "(адрес: 197374, г. ..., оф. 302) на обработку": the closing bracket ends the address.
+	if idx := strings.IndexByte(s, ')'); idx != -1 && !strings.Contains(s[:idx], "(") {
+		s = strings.TrimSpace(s[:idx])
+	}
+
+	for _, loc := range sentenceBreakRe.FindAllStringSubmatchIndex(s, -1) {
 		word := s[loc[2]:loc[3]]
 		wordUpper := strings.ToUpper(word)
-		if !nonFIOKeywords[wordUpper] && !strings.HasPrefix(wordUpper, "УЛ") && !strings.HasPrefix(wordUpper, "ПРОСП") {
-			s = strings.TrimSpace(s[:loc[0]])
+		if nonFIOKeywords[wordUpper] || strings.HasPrefix(wordUpper, "УЛ") || strings.HasPrefix(wordUpper, "ПРОСП") {
+			continue
 		}
+		// "г. Зеленоград", "ул. Тверская": the dot ends an abbreviation, not a sentence.
+		if addressAbbreviations[strings.ToUpper(lastWordBefore(s, loc[0]))] {
+			continue
+		}
+		s = strings.TrimSpace(s[:loc[0]])
+		break
 	}
 
 	return strings.TrimRight(s, " ,.-—\t")
+}
+
+// findAddressIndexes is FindAllStringSubmatchIndex for address rules, whose raw
+// match (up to 180 characters) is later cut by TrimAddress: the next search
+// starts where the trimmed address ends, so a second address inside the first
+// raw match is still found.
+func findAddressIndexes(re *regexp.Regexp, text string) [][]int {
+	var res [][]int
+	pos := 0
+	for pos < len(text) {
+		loc := re.FindStringSubmatchIndex(text[pos:])
+		if loc == nil {
+			break
+		}
+		for k := range loc {
+			if loc[k] >= 0 {
+				loc[k] += pos
+			}
+		}
+		res = append(res, loc)
+
+		next := loc[1]
+		if len(loc) >= 4 && loc[2] >= 0 {
+			val := text[loc[2]:loc[3]]
+			trimmed := TrimAddress(val)
+			if idx := strings.Index(val, trimmed); idx >= 0 && trimmed != "" {
+				next = loc[2] + idx + len(trimmed)
+			}
+		}
+		if next <= pos {
+			next = loc[1]
+		}
+		if next <= pos {
+			break
+		}
+		pos = next
+	}
+	return res
+}
+
+// addressPartPrefixes are lowercase words that may open a comma-separated address part.
+var addressPartPrefixes = []string{
+	"г.", "гор.", "город", "ул.", "улица", "д.", "дом", "кв.", "квартира", "корп.", "корпус", "к.",
+	"стр.", "строение", "лит.", "литер", "оф.", "офис", "пом.", "помещение", "обл.", "область",
+	"р-н", "район", "пос.", "посёлок", "поселок", "п.", "пгт", "с.", "село", "дер.", "деревня", "мкр",
+	"микрорайон", "пр-т", "пр-кт", "проспект", "пр.", "пер.", "переулок", "ш.", "шоссе", "наб.",
+	"набережная", "б-р", "бульвар", "пл.", "площадь", "тупик", "аллея", "проезд", "край", "респ.",
+	"республика", "эт.", "этаж", "каб.", "кабинет", "вл.", "владение", "ком.", "комн.", "комната",
+}
+
+// cutAtNonAddressPart drops everything from the first comma-separated part that
+// starts with an ordinary lowercase word: "…, кв. 48, даю согласие …".
+// Parts that start with a digit, a capital letter or an address word are kept.
+func cutAtNonAddressPart(s string) string {
+	parts := strings.Split(s, ",")
+	for i := 1; i < len(parts); i++ {
+		p := strings.TrimSpace(parts[i])
+		if p == "" {
+			continue
+		}
+		r, _ := utf8.DecodeRuneInString(p)
+		if !unicode.IsLower(r) {
+			continue
+		}
+		lower := strings.ToLower(p)
+		isAddressWord := false
+		for _, kw := range addressPartPrefixes {
+			if strings.HasPrefix(lower, kw) {
+				rest := lower[len(kw):]
+				next, _ := utf8.DecodeRuneInString(rest)
+				if strings.HasSuffix(kw, ".") || rest == "" || !unicode.IsLetter(next) {
+					isAddressWord = true
+					break
+				}
+			}
+		}
+		if !isAddressWord {
+			return strings.TrimSpace(strings.Join(parts[:i], ","))
+		}
+	}
+	return s
+}
+
+var sentenceBreakRe = regexp.MustCompile(`\.\s+([А-ЯЁ][а-яё]+)`)
+
+// lastWordBefore returns the letters immediately preceding byte offset end.
+func lastWordBefore(s string, end int) string {
+	start := end
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:start])
+		if !unicode.IsLetter(r) && r != '-' {
+			break
+		}
+		start -= size
+	}
+	return s[start:end]
 }
 
 // IsAddressValid verifies whether a candidate address contains typical street or housing keywords.
@@ -275,6 +396,17 @@ func FindTextMatches(text string) []TextMatch {
 func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMatch {
 	var matches []TextMatch
 
+	// weak rules only add a match where no other rule has matched yet.
+	weak := false
+	overlapsExisting := func(start, end int) bool {
+		for _, m := range matches {
+			if start < m.End && m.Start < end {
+				return true
+			}
+		}
+		return false
+	}
+
 	addRegexMatches := func(re *regexp.Regexp, submatchIdx int, entityType EntityType, validateFunc func(string) bool) {
 		if disabled != nil {
 			if disabled[string(entityType)] {
@@ -285,6 +417,9 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 			}
 		}
 		indexes := re.FindAllStringSubmatchIndex(text, -1)
+		if entityType == EntityAddress {
+			indexes = findAddressIndexes(re, text)
+		}
 		for _, loc := range indexes {
 			var start, end int
 			if submatchIdx*2+1 < len(loc) && loc[submatchIdx*2] >= 0 {
@@ -313,6 +448,9 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 			if !IsBoundaryAfter(text, end) {
 				continue
 			}
+			if weak && overlapsExisting(start, end) {
+				continue
+			}
 			if validateFunc == nil || validateFunc(val) {
 				matches = append(matches, TextMatch{
 					Start:      start,
@@ -327,6 +465,11 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 	// 1. Bank card & 20-digit Account
 	addRegexMatches(ReCard16, 1, EntityCard, func(s string) bool {
 		return ValidateCardNumber(s)
+	})
+	// A 4x4 grouped number with a payment-system prefix is a card even when a test
+	// number fails Luhn.
+	addRegexMatches(ReCardGrouped, 1, EntityCard, func(s string) bool {
+		return HasCardPrefix(CleanDigits(s)) && !looksLikeYearList(s)
 	})
 	addRegexMatches(ReBankAccount, 1, EntityCard, func(s string) bool {
 		return len(CleanDigits(s)) == 20
@@ -378,12 +521,16 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 	addRegexMatches(RePassportPrefixed, 1, EntityPassport, func(s string) bool {
 		return len(CleanDigits(s)) == 10
 	})
+	addRegexMatches(RePassportSeriesNumber, 1, EntityPassport, func(s string) bool {
+		return len(CleanDigits(s)) == 10
+	})
 	addRegexMatches(RePassportDeptCode, 1, EntityPassport, func(s string) bool {
 		return len(CleanDigits(s)) == 6
 	})
 
 	// 7. Address
 	addRegexMatches(ReAddressPostal, 1, EntityAddress, IsAddressValid)
+	addRegexMatches(ReAddressStreet, 1, EntityAddress, IsAddressValid)
 	addRegexMatches(ReAddressPrefixed, 1, EntityAddress, IsAddressValid)
 
 	// 8. FIO (Full names, prefixes, initials)
@@ -404,6 +551,17 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 		_, err := time.Parse("2006-01-02", s)
 		return err == nil
 	})
+	addRegexMatches(ReDateSlash, 1, EntityDate, func(s string) bool {
+		_, err := time.Parse("02/01/2006", s)
+		return err == nil
+	})
+	addRegexMatches(ReDateMonthName, 1, EntityDate, IsMonthNameDateValid)
+
+	// 10. Weak rules: a bare 10-digit number is an INN only if its checksum holds
+	// and no stronger rule (phone, account, passport) already claimed it.
+	weak = true
+	addRegexMatches(ReINN10, 1, EntityINN, ValidateINN10)
+	weak = false
 
 	if len(matches) <= 1 {
 		return matches
@@ -430,6 +588,42 @@ func FindTextMatchesWithOptions(text string, disabled map[string]bool) []TextMat
 	}
 
 	return deduped
+}
+
+var monthNames = map[string]time.Month{
+	"января": time.January, "февраля": time.February, "марта": time.March,
+	"апреля": time.April, "мая": time.May, "июня": time.June,
+	"июля": time.July, "августа": time.August, "сентября": time.September,
+	"октября": time.October, "ноября": time.November, "декабря": time.December,
+}
+
+// IsMonthNameDateValid checks a date like "15 марта 2024" for a real calendar day.
+func IsMonthNameDateValid(s string) bool {
+	parts := strings.Fields(s)
+	if len(parts) != 3 {
+		return false
+	}
+	month, ok := monthNames[strings.ToLower(parts[1])]
+	if !ok {
+		return false
+	}
+	day, err1 := strconv.Atoi(parts[0])
+	year, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || day < 1 || day > 31 {
+		return false
+	}
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Day() == day
+}
+
+// looksLikeYearList rejects "2020 2021 2022 2023"-style table headers.
+func looksLikeYearList(s string) bool {
+	for _, g := range strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == '-' }) {
+		y, err := strconv.Atoi(g)
+		if err != nil || y < 1900 || y > 2099 {
+			return false
+		}
+	}
+	return true
 }
 
 func entityPriority(t EntityType) int {

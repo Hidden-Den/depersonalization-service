@@ -67,6 +67,8 @@ type DocxTextSnippet struct {
 	Original   string `json:"original"`
 	Anonymized string `json:"anonymized"`
 	Type       string `json:"type"`
+	// Page is the 1-based PDF page the entity was found on; 0 when unknown or not a PDF.
+	Page int `json:"page,omitempty"`
 }
 
 // TextParagraphSegment represents a piece of text inside a paragraph, indicating if it was anonymized.

@@ -25,6 +25,8 @@ export interface DocxTextSnippet {
   original: string;
   anonymized: string;
   type: string;
+  /** 1-based PDF page where Go found the entity; absent for other formats. */
+  page?: number;
 }
 
 export interface TextParagraphSegment {

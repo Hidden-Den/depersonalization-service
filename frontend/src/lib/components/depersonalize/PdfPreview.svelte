@@ -2,7 +2,9 @@
   import { appState } from '../../stores/appState.svelte';
   import { loadPdf, type PDFDocumentProxy } from '../../utils/pdfWorker';
   import { GetFileBase64 } from '../../api/wails';
-  import type { PDFRedactionBox } from '../../types/domain';
+  import { cleanWord, findTokenRuns } from '../../utils/pdfTextMatch';
+  import BeforeAfterToggle from '../ui/BeforeAfterToggle.svelte';
+  import type { DocxTextSnippet, PDFRedactionBox } from '../../types/domain';
 
   const MAX_PREVIEW_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
   let isBefore = $state(false); // false = Anonymized, true = Original
@@ -27,6 +29,8 @@
     anonymized: string;
     cssRect: { left: number; top: number; width: number; height: number };
     pdfBox: PDFRedactionBox;
+    /** Нормализованное значение из Go, по которому найдена эта область. */
+    source: string;
   }
 
   interface RenderedPageData {
@@ -80,6 +84,15 @@
         }
       }
     }
+    // Значения, которые Go нашёл, а превью не смогло разместить на странице
+    // (другая разбивка текста в pdf.js), передаём строками: при наличии рамок
+    // обработчик PDF не ищет ПДн сам, и без этого они остались бы открытыми.
+    const located = new Set(allDetectedEntities.map((e) => e.source));
+    for (const snip of uniqueSnippets(fileInfo?.textSnippets)) {
+      if (!located.has(snippetKey(snip))) {
+        activeTerms.push(snip.original.trim());
+      }
+    }
     appState.pdfRedactionBoxes = activeBoxes;
     appState.pdfRedactTerms = activeTerms;
   });
@@ -128,53 +141,24 @@
     return bytes;
   }
 
-  // Redaction marker for PDF preview (100% unified Blackout Redaction)
-  function makeAnonymizedValue(): string {
-    return '[ ПДн СКРЫТО ]';
-  }
+  const BLACKOUT_MARKER = '[ ПДн СКРЫТО ]';
 
-  // Regex patterns for Russian personal data detection
-  const piiPatterns: Array<{ type: string; regex: RegExp }> = [
-    {
-      type: 'PHONE',
-      regex: /(?:(?:\+?\s*7|8)(?:[\s\-\(\).]*\d){10})/g
-    },
-    {
-      type: 'PASSPORT',
-      regex: /(?:(?:паспорт|серия|номер|№)[:\s]*)?\b\d{4}\s+\d{6}\b|\b\d{2}\s+\d{2}\s+\d{6}\b/gi
-    },
-    {
-      type: 'SNILS',
-      regex: /\b\d{3}[-\s]\d{3}[-\s]\d{3}[-\s]\d{2}\b/g
-    },
-    {
-      type: 'INN',
-      regex: /(?:ИНН[:\s]*)?\b\d{10}\b|\b\d{12}\b/gi
-    },
-    {
-      type: 'CARD',
-      regex: /\b(?:\d{4}[\s\-]?){4}\b/g
-    },
-    {
-      type: 'EMAIL',
-      regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
-    },
-    {
-      type: 'DATE',
-      regex: /\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+\d{4}(?:\s*г\.?)?|\b\d{2}[./]\d{2}[./]\d{4}\b/gi
-    },
-    {
-      type: 'FIO',
-      regex: /(?:^|[^а-яёА-ЯЁ])([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+(?:(?:ович|евич|ич)(?:[ауе]|ем)?|(?:овн|евн|ичн|иничн)(?:[аыеу]|ой|ою)?)|[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.|\b[А-ЯЁ]\.\s*[А-ЯЁ]\.\s+[А-ЯЁ][а-яё]+)(?=[^а-яёА-ЯЁ]|$)/gu
-    },
-    {
-      type: 'ADDRESS',
-      regex: /(?:г\.|город|ул\.|улица|пр-т|проспект|д\.|дом|кв\.|квартира)\s+[^,;\n]{2,30}(?:,\s*(?:ул\.|д\.|кв\.)\s*[^,;\n]{1,20})+/gi
+  // PII is detected only in Go (InspectFile → textSnippets). The preview never
+  // searches the text itself: it places overlays over the values Go returned.
+  // Each distinct value is searched on every page, so a value Go found once is
+  // covered wherever else it appears in the document.
+  const snippetKey = (snip: DocxTextSnippet) => snip.original?.trim().split(/\s+/).join(' ') ?? '';
+
+  function uniqueSnippets(snippets: DocxTextSnippet[] | undefined): DocxTextSnippet[] {
+    const seen = new Set<string>();
+    const result: DocxTextSnippet[] = [];
+    for (const snip of snippets ?? []) {
+      const key = snippetKey(snip);
+      if (!key || key.length < 2 || seen.has(key)) continue;
+      seen.add(key);
+      result.push(snip);
     }
-  ];
-
-  function cleanWord(w: string): string {
-    return w.trim().replace(/[.,:;()\[\]"'\-–—]/g, '').toLowerCase();
+    return result;
   }
 
   function hasRectOverlap(
@@ -223,6 +207,7 @@
       const targetScale = 1.35; // Standard desktop reading scale
 
       const pagesList: RenderedPageData[] = [];
+      const goSnippets = uniqueSnippets(fileInfo?.textSnippets);
       let globalCounter = 0;
 
       for (let pNum = 1; pNum <= pagesToRender; pNum++) {
@@ -282,138 +267,66 @@
           cssRect: { left: number; top: number; width: number; height: number };
           matchedStr: string;
         }> {
-          const targetCleanWords = targetText.trim().split(/\s+/).map(cleanWord).filter(Boolean);
-          if (targetCleanWords.length === 0) return [];
-
           const results: Array<{
             pdfBox: PDFRedactionBox;
             cssRect: { left: number; top: number; width: number; height: number };
             matchedStr: string;
           }> = [];
 
-          for (let i = 0; i <= tokens.length - targetCleanWords.length; i++) {
-            let match = true;
-            for (let w = 0; w < targetCleanWords.length; w++) {
-              const currentToken = tokens[i + w];
-              const targetW = targetCleanWords[w];
-              if (!currentToken || !targetW) {
-                match = false;
-                break;
-              }
-              const tokClean = currentToken.clean;
-              if (targetCleanWords.length === 1) {
-                const isNum = /^\d+$/.test(targetW);
-                if (isNum ? !tokClean.includes(targetW) : tokClean !== targetW) {
-                  match = false;
-                  break;
-                }
+          for (const [firstIdx, lastIdx] of findTokenRuns(tokens, targetText)) {
+            const matched = tokens.slice(firstIdx, lastIdx + 1);
+
+            // Group tokens by line Y coordinate (within 5pt tolerance)
+            const lines: WordToken[][] = [];
+            for (const tok of matched) {
+              const lastLine = lines[lines.length - 1];
+              if (lastLine && lastLine.length > 0 && Math.abs(lastLine[0]!.y - tok.y) < 5) {
+                lastLine.push(tok);
               } else {
-                if (tokClean !== targetW && !tokClean.startsWith(targetW) && !targetW.startsWith(tokClean)) {
-                  match = false;
-                  break;
-                }
+                lines.push([tok]);
               }
             }
 
-            if (match) {
-              const matched = tokens.slice(i, i + targetCleanWords.length);
+            for (const lineTokens of lines) {
+              const minX = Math.min(...lineTokens.map((t) => t.pdfBox.x));
+              const minY = Math.min(...lineTokens.map((t) => t.pdfBox.y));
+              const maxX = Math.max(...lineTokens.map((t) => t.pdfBox.x + t.pdfBox.width));
+              const maxY = Math.max(...lineTokens.map((t) => t.pdfBox.y + t.pdfBox.height));
 
-              // Group tokens by line Y coordinate (within 5pt tolerance)
-              const lines: WordToken[][] = [];
-              for (const tok of matched) {
-                const lastLine = lines[lines.length - 1];
-                if (lastLine && lastLine.length > 0 && Math.abs(lastLine[0]!.y - tok.y) < 5) {
-                  lastLine.push(tok);
-                } else {
-                  lines.push([tok]);
-                }
-              }
+              const viewRect = viewport.convertToViewportRectangle([minX, minY, maxX, maxY]);
+              const cssLeft = Math.min(viewRect[0], viewRect[2]);
+              const cssTop = Math.min(viewRect[1], viewRect[3]);
+              const cssWidth = Math.max(Math.abs(viewRect[2] - viewRect[0]), 8);
+              const cssHeight = Math.max(Math.abs(viewRect[3] - viewRect[1]), 12);
 
-              for (const lineTokens of lines) {
-                const minX = Math.min(...lineTokens.map((t) => t.pdfBox.x));
-                const minY = Math.min(...lineTokens.map((t) => t.pdfBox.y));
-                const maxX = Math.max(...lineTokens.map((t) => t.pdfBox.x + t.pdfBox.width));
-                const maxY = Math.max(...lineTokens.map((t) => t.pdfBox.y + t.pdfBox.height));
-
-                const viewRect = viewport.convertToViewportRectangle([minX, minY, maxX, maxY]);
-                const cssLeft = Math.min(viewRect[0], viewRect[2]);
-                const cssTop = Math.min(viewRect[1], viewRect[3]);
-                const cssWidth = Math.max(Math.abs(viewRect[2] - viewRect[0]), 8);
-                const cssHeight = Math.max(Math.abs(viewRect[3] - viewRect[1]), 12);
-
-                results.push({
-                  pdfBox: { page: pNum, x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-                  cssRect: { left: cssLeft, top: cssTop, width: cssWidth, height: cssHeight },
-                  matchedStr: lineTokens.map((t) => t.word).join(' ')
-                });
-              }
-
-              i += targetCleanWords.length - 1;
+              results.push({
+                pdfBox: { page: pNum, x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+                cssRect: { left: cssLeft, top: cssTop, width: cssWidth, height: cssHeight },
+                matchedStr: lineTokens.map((t) => t.word).join(' ')
+              });
             }
           }
 
           return results;
         }
 
-        // Run detection on current page
+        // Place overlays over the entities Go detected
         const pageEntities: PageOverlayEntity[] = [];
 
-        // 1. Detect via known snippets from Go inspector if available
-        if (fileInfo?.textSnippets && fileInfo.textSnippets.length > 0) {
-          for (const snip of fileInfo.textSnippets) {
-            if (!snip.original || snip.original.trim().length < 2) continue;
-            const boxes = findBoxesForText(snip.original);
-            for (const b of boxes) {
-              const alreadyCovered = pageEntities.some((existing) =>
-                hasRectOverlap(existing.cssRect, b.cssRect)
-              );
-              if (!alreadyCovered) {
-                globalCounter++;
-                pageEntities.push({
-                  instanceId: `${pNum}_${globalCounter}`,
-                  pageNum: pNum,
-                  type: snip.type || 'FIO',
-                  original: b.matchedStr.replace(/[.,:;()\[\]"'\-–—]+$/, '') || snip.original,
-                  anonymized: '[ ПДн СКРЫТО ]',
-                  cssRect: b.cssRect,
-                  pdfBox: b.pdfBox
-                });
-              }
-            }
-          }
-        }
-
-        // 2. Client-side PII pattern matching on clean single-spaced page text
-        const cleanPageStr = tokens.map((t) => t.word).join(' ');
-
-        for (const pat of piiPatterns) {
-          pat.regex.lastIndex = 0;
-          let match: RegExpExecArray | null;
-          while ((match = pat.regex.exec(cleanPageStr)) !== null) {
-            const matchedText = (match[1] || match[0]).trim();
-            if (matchedText.length < 3) continue;
-
-            const boxes = findBoxesForText(matchedText);
-            for (const b of boxes) {
-              const alreadyCovered = pageEntities.some(
-                (e) =>
-                  e.original.includes(matchedText) ||
-                  matchedText.includes(e.original) ||
-                  hasRectOverlap(e.cssRect, b.cssRect)
-              );
-              if (alreadyCovered) continue;
-
-              globalCounter++;
-              pageEntities.push({
-                instanceId: `${pNum}_${globalCounter}`,
-                pageNum: pNum,
-                type: pat.type,
-                original: b.matchedStr.replace(/[.,:;()\[\]"'\-–—]+$/, '') || matchedText,
-                anonymized: '[ ПДн СКРЫТО ]',
-                cssRect: b.cssRect,
-                pdfBox: b.pdfBox
-              });
-            }
+        for (const snip of goSnippets) {
+          for (const b of findBoxesForText(snip.original)) {
+            if (pageEntities.some((existing) => hasRectOverlap(existing.cssRect, b.cssRect))) continue;
+            globalCounter++;
+            pageEntities.push({
+              instanceId: `${pNum}_${globalCounter}`,
+              pageNum: pNum,
+              type: snip.type || 'FIO',
+              original: b.matchedStr.replace(/[.,:;()\[\]"'\-–—]+$/, '') || snip.original,
+              anonymized: BLACKOUT_MARKER,
+              cssRect: b.cssRect,
+              pdfBox: b.pdfBox,
+              source: snippetKey(snip)
+            });
           }
         }
 
@@ -480,26 +393,7 @@
 
       <!-- Controls Right: Before/After Toggle -->
       <div class="flex items-center gap-2.5">
-        <div class="h-7 inline-flex items-center border border-[#E8E7E3] bg-[#F0EFEB] rounded-md p-0.5 text-xs font-medium">
-          <button
-            type="button"
-            onclick={() => (isBefore = false)}
-            class="h-full px-3 rounded pressable flex items-center {!isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Очищенные данные
-          </button>
-          <button
-            type="button"
-            onclick={() => (isBefore = true)}
-            class="h-full px-3 rounded pressable flex items-center {isBefore
-              ? 'bg-white text-[#1C1917] font-semibold shadow-xs'
-              : 'text-[#78716C] hover:text-[#1C1917]'} transition cursor-pointer"
-          >
-            Исходные с ПДн
-          </button>
-        </div>
+        <BeforeAfterToggle bind:before={isBefore} />
       </div>
     </div>
 

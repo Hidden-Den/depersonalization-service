@@ -1941,134 +1941,241 @@ func ExtractPDFRawTextAndPageCount(pdfBytes []byte) (int, string, error) {
 	fontCMaps, defaultCMap := extractFontCMaps(objMap)
 
 	var sb strings.Builder
-	const maxExtractedPDFText = 10 * 1024 * 1024 // 10 MB maximum text for inspection
-	for _, obj := range objects {
+	for i := range objects {
 		if sb.Len() >= maxExtractedPDFText {
 			break
 		}
-		if !obj.HasStream || len(obj.StreamData) == 0 {
-			continue
-		}
-		if !isContentStream(obj.DictHeader) {
-			continue
-		}
-
-		streamData := obj.StreamData
-		if obj.Compressed {
-			zr, err := zlib.NewReader(bytes.NewReader(obj.StreamData))
-			if err == nil {
-				decomp, readErr := io.ReadAll(io.LimitReader(zr, 20*1024*1024))
-				_ = zr.Close()
-				if readErr == nil {
-					streamData = decomp
-				}
-			}
-		}
-
-		currentFont := ""
-		i := 0
-		n := len(streamData)
-		for i < n {
-			b := streamData[i]
-			if b == '/' {
-				end := i + 1
-				for end < n && !isWhitespace(streamData[end]) && streamData[end] != '/' && streamData[end] != '[' && streamData[end] != '(' {
-					end++
-				}
-				name := string(streamData[i+1 : end])
-				look := end
-				for look < n && (isWhitespace(streamData[look]) || (streamData[look] >= '0' && streamData[look] <= '9') || streamData[look] == '.') {
-					look++
-				}
-				if look+2 <= n && streamData[look] == 'T' && streamData[look+1] == 'f' {
-					currentFont = name
-				}
-				i = end
-				continue
-			}
-
-			if b == '(' {
-				_, decoded, next := parseLiteralString(streamData, i)
-				txt := decodeText(decoded)
-				if txt != "" {
-					sb.WriteString(txt)
-					sb.WriteString(" ")
-				}
-				i = next
-				continue
-			}
-
-			if b == '<' {
-				if i+1 < n && streamData[i+1] == '<' {
-					i += 2
-					continue
-				}
-				rawHex, decoded, next := parseHexString(streamData, i)
-				activeCMap := defaultCMap
-				if cm, ok := fontCMaps[currentFont]; ok && cm != nil {
-					activeCMap = cm
-				}
-				if activeCMap != nil && len(rawHex) >= 2 {
-					hexStr := string(rawHex[1 : len(rawHex)-1])
-					txt := activeCMap.decodeHex(hexStr)
-					if txt != "" {
-						sb.WriteString(txt)
-						sb.WriteString(" ")
-					}
-				} else {
-					txt := decodePDFString(decoded)
-					if txt != "" {
-						sb.WriteString(txt)
-						sb.WriteString(" ")
-					}
-				}
-				i = next
-				continue
-			}
-
-			if b == '[' {
-				rawArr, next := parseArray(streamData, i)
-				activeCMap := defaultCMap
-				if cm, ok := fontCMaps[currentFont]; ok && cm != nil {
-					activeCMap = cm
-				}
-				arrIdx := 0
-				arrLen := len(rawArr)
-				for arrIdx < arrLen {
-					ab := rawArr[arrIdx]
-					if ab == '(' {
-						_, d, nxt := parseLiteralString(rawArr, arrIdx)
-						txt := decodeText(d)
-						if txt != "" {
-							sb.WriteString(txt)
-						}
-						arrIdx = nxt
-					} else if ab == '<' {
-						if arrIdx+1 < arrLen && rawArr[arrIdx+1] == '<' {
-							arrIdx += 2
-							continue
-						}
-						rHex, d, nxt := parseHexString(rawArr, arrIdx)
-						if activeCMap != nil && len(rHex) >= 2 {
-							sb.WriteString(activeCMap.decodeHex(string(rHex[1 : len(rHex)-1])))
-						} else {
-							sb.WriteString(decodePDFString(d))
-						}
-						arrIdx = nxt
-					} else {
-						arrIdx++
-					}
-				}
-				sb.WriteString(" ")
-				i = next
-				continue
-			}
-
-			i++
-		}
-		sb.WriteString("\n")
+		appendContentStreamText(&sb, &objects[i], fontCMaps, defaultCMap)
 	}
 
 	return pageCount, strings.TrimSpace(sb.String()), nil
 }
 
+// maxExtractedPDFText caps the text extracted from one PDF for inspection.
+const maxExtractedPDFText = 10 * 1024 * 1024 // 10 MB
+
+// PDFPageText is the text of one PDF page. Page 0 holds text from content
+// streams that no page references.
+type PDFPageText struct {
+	Page int
+	Text string
+}
+
+// ExtractPDFPageTexts extracts text page by page, in page order, with CMap decoding.
+func ExtractPDFPageTexts(pdfBytes []byte) ([]PDFPageText, error) {
+	if !bytes.HasPrefix(pdfBytes, []byte("%PDF-")) {
+		return nil, errors.New("invalid PDF: missing %PDF- header")
+	}
+
+	objects, _, err := parsePDF(pdfBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	objMap := make(map[int]*pdfObject, len(objects))
+	for i := range objects {
+		objMap[objects[i].ID] = &objects[i]
+	}
+	fontCMaps, defaultCMap := extractFontCMaps(objMap)
+
+	var pages []PDFPageText
+	total := 0
+	used := make(map[int]bool)
+	for _, p := range getPDFPageTree(pdfBytes, objMap, objects) {
+		var sb strings.Builder
+		for _, id := range p.ContentRefs {
+			obj, ok := objMap[id]
+			if !ok || used[id] || total+sb.Len() >= maxExtractedPDFText {
+				continue
+			}
+			used[id] = true
+			appendContentStreamText(&sb, obj, fontCMaps, defaultCMap)
+		}
+		total += sb.Len()
+		pages = append(pages, PDFPageText{Page: p.Num, Text: strings.TrimSpace(sb.String())})
+	}
+
+	var orphan strings.Builder
+	for i := range objects {
+		if used[objects[i].ID] || total+orphan.Len() >= maxExtractedPDFText {
+			continue
+		}
+		appendContentStreamText(&orphan, &objects[i], fontCMaps, defaultCMap)
+	}
+	if text := strings.TrimSpace(orphan.String()); text != "" {
+		pages = append(pages, PDFPageText{Page: 0, Text: text})
+	}
+
+	return pages, nil
+}
+
+// decodeLiteralWithFont decodes a literal string shown with a font. Simple
+// TrueType subsets (macOS cupsfilter, Quartz) store Cyrillic as single-byte
+// codes of the subset; their /ToUnicode CMap is the only way to read them.
+func decodeLiteralWithFont(raw []byte, fontCMap *pdfCMap) string {
+	if fontCMap != nil && len(fontCMap.mapping) > 0 && len(raw) > 0 {
+		if txt := fontCMap.decodeHex(hex.EncodeToString(raw)); txt != "" {
+			return txt
+		}
+	}
+	return decodeText(raw)
+}
+
+// appendContentStreamText decodes the text-showing operators of one content
+// stream into sb, separating strings with spaces and ending with a newline.
+func appendContentStreamText(sb *strings.Builder, obj *pdfObject, fontCMaps map[string]*pdfCMap, defaultCMap *pdfCMap) {
+	if !obj.HasStream || len(obj.StreamData) == 0 || !isContentStream(obj.DictHeader) {
+		return
+	}
+
+	streamData := obj.StreamData
+	if obj.Compressed {
+		zr, err := zlib.NewReader(bytes.NewReader(obj.StreamData))
+		if err == nil {
+			decomp, readErr := io.ReadAll(io.LimitReader(zr, 20*1024*1024))
+			_ = zr.Close()
+			if readErr == nil {
+				streamData = decomp
+			}
+		}
+	}
+
+	// ToUnicode CMaps are streams too; their hex pairs are not page text.
+	if bytes.Contains(streamData, []byte("begincmap")) {
+		return
+	}
+
+	// Consecutive text-showing operators continue at the current text position,
+	// so a word split across fonts ("г" + "." in cupsfilter output) stays whole.
+	// A separator goes in only where the text position moves or a text object ends.
+	needSep := false
+	emit := func(txt string) {
+		if txt == "" {
+			return
+		}
+		if needSep && sb.Len() > 0 {
+			sb.WriteString(" ")
+		}
+		needSep = false
+		sb.WriteString(txt)
+	}
+
+	currentFont := ""
+	i := 0
+	n := len(streamData)
+	for i < n {
+		b := streamData[i]
+		if b == '/' {
+			end := i + 1
+			for end < n && !isWhitespace(streamData[end]) && streamData[end] != '/' && streamData[end] != '[' && streamData[end] != '(' {
+				end++
+			}
+			name := string(streamData[i+1 : end])
+			look := end
+			for look < n && (isWhitespace(streamData[look]) || (streamData[look] >= '0' && streamData[look] <= '9') || streamData[look] == '.') {
+				look++
+			}
+			if look+2 <= n && streamData[look] == 'T' && streamData[look+1] == 'f' {
+				currentFont = name
+			}
+			i = end
+			continue
+		}
+
+		if b == '(' {
+			_, decoded, next := parseLiteralString(streamData, i)
+			emit(decodeLiteralWithFont(decoded, fontCMaps[currentFont]))
+			i = next
+			continue
+		}
+
+		if b == '<' {
+			if i+1 < n && streamData[i+1] == '<' {
+				i += 2
+				continue
+			}
+			rawHex, decoded, next := parseHexString(streamData, i)
+			activeCMap := defaultCMap
+			if cm, ok := fontCMaps[currentFont]; ok && cm != nil {
+				activeCMap = cm
+			}
+			if activeCMap != nil && len(rawHex) >= 2 {
+				hexStr := string(rawHex[1 : len(rawHex)-1])
+				emit(activeCMap.decodeHex(hexStr))
+			} else {
+				emit(decodePDFString(decoded))
+			}
+			i = next
+			continue
+		}
+
+		if b == '[' {
+			rawArr, next := parseArray(streamData, i)
+			activeCMap := defaultCMap
+			if cm, ok := fontCMaps[currentFont]; ok && cm != nil {
+				activeCMap = cm
+			}
+			var arrText strings.Builder
+			arrIdx := 0
+			arrLen := len(rawArr)
+			for arrIdx < arrLen {
+				ab := rawArr[arrIdx]
+				if ab == '(' {
+					_, d, nxt := parseLiteralString(rawArr, arrIdx)
+					arrText.WriteString(decodeLiteralWithFont(d, fontCMaps[currentFont]))
+					arrIdx = nxt
+				} else if ab == '<' {
+					if arrIdx+1 < arrLen && rawArr[arrIdx+1] == '<' {
+						arrIdx += 2
+						continue
+					}
+					rHex, d, nxt := parseHexString(rawArr, arrIdx)
+					if activeCMap != nil && len(rHex) >= 2 {
+						arrText.WriteString(activeCMap.decodeHex(string(rHex[1 : len(rHex)-1])))
+					} else {
+						arrText.WriteString(decodePDFString(d))
+					}
+					arrIdx = nxt
+				} else {
+					arrIdx++
+				}
+			}
+			emit(arrText.String())
+			i = next
+			continue
+		}
+
+		if isPDFOperatorStart(streamData, i) {
+			end := i + 1
+			for end < n && !isWhitespace(streamData[end]) && !isPDFDelimiter(streamData[end]) {
+				end++
+			}
+			switch string(streamData[i:end]) {
+			case "Td", "TD", "Tm", "T*", "BT", "ET", "'", "\"":
+				needSep = true
+			}
+			i = end
+			continue
+		}
+
+		i++
+	}
+	sb.WriteString("\n")
+}
+
+// isPDFOperatorStart reports whether an operator token (Td, ET, T*, ', ...) starts at i.
+func isPDFOperatorStart(data []byte, i int) bool {
+	b := data[i]
+	if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '*' || b == '\'' || b == '"') {
+		return false
+	}
+	return i == 0 || isWhitespace(data[i-1]) || isPDFDelimiter(data[i-1])
+}
+
+func isPDFDelimiter(b byte) bool {
+	switch b {
+	case '(', ')', '<', '>', '[', ']', '{', '}', '/', '%':
+		return true
+	}
+	return false
+}

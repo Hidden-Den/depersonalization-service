@@ -1065,50 +1065,40 @@ func inspectPDF(ctx context.Context, path string) (*domain.FileInfo, error) {
 	}, nil
 }
 
-type pdfEntityMatch struct {
-	start      int
-	end        int
-	value      string
-	entityType string
-}
-
-func findPDFSensitiveMatches(text string) []pdfEntityMatch {
-	tms := detector.FindTextMatches(text)
-	if len(tms) == 0 {
-		return nil
-	}
-	res := make([]pdfEntityMatch, len(tms))
-	for i, m := range tms {
-		res[i] = pdfEntityMatch{
-			start:      m.Start,
-			end:        m.End,
-			value:      m.Value,
-			entityType: string(m.EntityType),
+// extractPDFInfo runs the shared Go detector over the text of every page. It is
+// the only PII detection for PDF: the preview only places overlays on what it returns.
+func extractPDFInfo(ctx context.Context, pdfBytes []byte) ([]formats.DocxTextSnippet, []domain.EntityInfo, string, int) {
+	pages, err := formats.ExtractPDFPageTexts(pdfBytes)
+	pageCount := 0
+	texts := make([]string, 0, len(pages))
+	for _, p := range pages {
+		if p.Page > 0 {
+			pageCount++
+		}
+		if p.Text != "" {
+			texts = append(texts, p.Text)
 		}
 	}
-	return res
-}
-
-func extractPDFInfo(ctx context.Context, pdfBytes []byte) ([]formats.DocxTextSnippet, []domain.EntityInfo, string, int) {
-	pageCount, rawText, err := formats.ExtractPDFRawTextAndPageCount(pdfBytes)
-	if err != nil || pageCount <= 0 {
+	if err != nil || pageCount == 0 {
 		pageCount = 1
 	}
 
-	matches := findPDFSensitiveMatches(rawText)
 	entityTypeCounts := make(map[string]int)
 	var snippets []formats.DocxTextSnippet
 
-	for _, m := range matches {
+	for _, p := range pages {
 		if ctx != nil && ctx.Err() != nil {
 			break
 		}
-		entityTypeCounts[m.entityType]++
-		snippets = append(snippets, formats.DocxTextSnippet{
-			Original:   m.value,
-			Anonymized: formats.BlackoutMarker,
-			Type:       m.entityType,
-		})
+		for _, m := range detector.FindTextMatches(p.Text) {
+			entityTypeCounts[string(m.EntityType)]++
+			snippets = append(snippets, formats.DocxTextSnippet{
+				Original:   m.Value,
+				Anonymized: formats.BlackoutMarker,
+				Type:       string(m.EntityType),
+				Page:       p.Page,
+			})
+		}
 	}
 
 	entityOrder := []string{"FIO", "SNILS", "PASSPORT", "PHONE", "INN", "BANK_CARD", "CARD", "EMAIL", "ADDRESS", "DATE"}
@@ -1151,7 +1141,7 @@ func extractPDFInfo(ctx context.Context, pdfBytes []byte) ([]formats.DocxTextSni
 		}
 	}
 
-	return snippets, entities, rawText, pageCount
+	return snippets, entities, strings.Join(texts, "\n"), pageCount
 }
 
 func formatBytes(bytes int64) string {
