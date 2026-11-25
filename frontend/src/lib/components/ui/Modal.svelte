@@ -29,6 +29,9 @@
 
   const token = Symbol('modal');
   let panel: HTMLDivElement;
+  // Закрываем по клику на подложку, только если и нажатие началось на ней:
+  // иначе выделение текста, отпущенное за краем окна, закрывало бы его.
+  let pressedOnOverlay = false;
 
   const FOCUSABLE =
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -83,8 +86,10 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
   class="fixed inset-0 backdrop-blur-xs flex items-center justify-center z-50 overflow-hidden overscroll-contain {overlayClass}"
+  onmousedown={(e) => (pressedOnOverlay = e.target === e.currentTarget)}
   onclick={(e) => {
-    if (e.target === e.currentTarget) onClose?.();
+    if (pressedOnOverlay && e.target === e.currentTarget) onClose?.();
+    pressedOnOverlay = false;
   }}
 >
   <div

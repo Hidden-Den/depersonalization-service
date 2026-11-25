@@ -147,7 +147,7 @@
         </div>
 
         <div class="space-y-1.5">
-          {#each savedFiles as file (file.path)}
+          {#each savedFiles as file (file.icon)}
             <div class="flex items-center justify-between gap-2 bg-white border border-[#E8E7E3] rounded-md p-2">
               <div class="min-w-0 flex items-center gap-2">
                 <Icon name={file.icon} class="w-3.5 h-3.5 shrink-0 {file.iconClass}" strokeWidth={1.8} />
